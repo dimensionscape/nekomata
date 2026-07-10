@@ -2,3 +2,4 @@
 *.hx text eol=lf
 *.md text eol=lf
 *.hxml text eol=lf
+*.neko text eol=lf

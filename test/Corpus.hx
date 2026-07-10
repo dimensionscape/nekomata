@@ -1,7 +1,7 @@
 import nekomata.neko.*;
 import nekomata.neko.Module;
 
-// Reads and stack-checks every .n file given, or found under the directories given:
+// Reads, stack-checks and translates every .n file given, or found under the directories given:
 //  haxe test.hxml <file.n | dir>...
 class Corpus {
 	static function main() {
@@ -14,13 +14,14 @@ class Corpus {
 				var m = Reader.read(sys.io.File.getBytes(f));
 				var scopes = StackCheck.run(m);
 				var unnamed = unnamedFields(m);
-				Sys.println('ok   $f (${scopes.length - 1} functions${unnamed > 0 ? ', $unnamed field hashes without a declared name' : ""})');
+				var cppia = nekomata.emit.Emitter.emit(m, "Check");
+				Sys.println('ok   $f (${scopes.length - 1} functions, ${Std.int(cppia.length / 1024)} KB of cppia${unnamed > 0 ? ', $unnamed field hashes without a declared name' : ""})');
 			} catch (e:haxe.Exception) {
 				failed++;
 				Sys.println('FAIL $f: ${e.message}');
 			}
 		}
-		Sys.println('${files.length - failed} of ${files.length} modules read and checked');
+		Sys.println('${files.length - failed} of ${files.length} modules read, checked and translated');
 		Sys.exit(failed == 0 ? 0 : 1);
 	}
 

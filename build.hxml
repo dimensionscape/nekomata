@@ -1,0 +1,10 @@
+# The native Nekomata host, against the hxcpp the local haxelib repo points at
+-cp src
+--main nekomata.Main
+-D scriptable
+--dce no
+# The runtime is only named by generated scripts, so nothing else pulls it in
+--macro include("nekomata.rt")
+-D HXCPP_CATCH_SEGV
+-D HAXE_OUTPUT_FILE=nekomata
+--cpp bin/host

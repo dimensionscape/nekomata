@@ -1,0 +1,12 @@
+$print("hello world\n");
+var f = function(a, b) { return a + b; };
+$print("sum ", f(2, 3), " ", f("a", 1), " ", 7 / 2, " ", 2.0, "\n");
+var o = $new(null);
+o.x = 1;
+o.y = $array(1, "two", 3.5);
+$print(o, "\n");
+try { $throw("boom"); } catch e { $print("caught ", e, "\n"); }
+var i = 0;
+while i < 3 { $print(i); i = i + 1; }
+$print("\n");
+switch i { 1 => $print("one\n") 3 => $print("three\n") default => $print("other\n") }

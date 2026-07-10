@@ -59,6 +59,9 @@ null, `Array<Dynamic>`), so they cost nothing to pass to primitives.
 | 7 | Native extensions | ndlls rebuilt against hxcpp CFFI load; then a libneko shim for prebuilt neko ndlls |
 | 8 | Speed | Profile, then add native expression nodes through a libhxcpp hook where calls cost most |
 
+Milestones 1 and 2 are done. libhxcpp's `run.n` and haxelib's `run.n` translate, load and
+start, then stop at `std@thread_current`, the first primitive milestone 3 adds.
+
 ## Test corpus
 
 - libhxcpp `run.n` and `hxcpp.n` (Haxe 4 output)
@@ -76,6 +79,18 @@ null, `Array<Dynamic>`), so they cost nothing to pass to primitives.
 - `Call`, `ObjCall` and `TailCall` take at most 5 arguments; more go through `Apply`.
 - Wrong argument counts raise "Invalid call", as neko does.
 - `$print`, `$string` and string conversion of every value match neko's output.
+
+## Notes from milestone 2
+
+- hxcpp boxes a Float with a small integral value (-1 to 255) as an Int, so neko floats
+  are boxed in `NFloat` to keep `$typeof` and float arithmetic right.
+- The host must compile the runtime package explicitly (`--macro include`), since only
+  generated scripts name its classes.
+- Startup: translating and loading costs about 0.4 s for haxelib's `run.n` and 1.8 s for
+  lime's `tools.n`, where neko starts haxelib in under 0.1 s. The text form is about 70
+  times the bytecode's size. Writing binary cppia (`CPPIB`), a smaller encoding of the
+  dispatch loop and a cache of translated modules keyed by content hash all belong to
+  milestone 8, and the cache may need to come earlier for haxelib.
 
 ## Open questions
 
