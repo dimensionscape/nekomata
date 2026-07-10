@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.hx text eol=lf
+*.md text eol=lf
+*.hxml text eol=lf
