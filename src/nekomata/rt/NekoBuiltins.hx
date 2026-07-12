@@ -44,7 +44,9 @@ class NekoBuiltins {
 		return v;
 	}
 
-	static function init() {
+	public static function init() {
+		if (table != null)
+			return;
 		table = new haxe.ds.IntMap();
 
 		add("print", NFunction.VAR_ARGS, function(args:Array<Dynamic>) {
@@ -234,7 +236,7 @@ class NekoBuiltins {
 			if (fn.nargs != NFunction.VAR_ARGS && bound.length > fn.nargs)
 				Rt.error("$closure");
 			var left = fn.nargs == NFunction.VAR_ARGS ? NFunction.VAR_ARGS : fn.nargs - bound.length;
-			return new NFunction(function(rest:Array<Dynamic>) return Rt.callArgs(fn, th, bound.concat(rest)), left, Primitive);
+			return Rt.bind(fn, th, bound, left);
 		});
 		add("apply", NFunction.VAR_ARGS, function(args:Array<Dynamic>):Dynamic {
 			if (args.length < 1)
@@ -250,31 +252,47 @@ class NekoBuiltins {
 		// Exceptions
 		add("throw", 1, (v:Dynamic) -> Rt.raise(v));
 		add("rethrow", 1, (v:Dynamic) -> Rt.raise(v));
-		add("excstack", 0, function():Array<Dynamic> return []);
-		add("callstack", 0, function():Array<Dynamic> return []);
+		add("excstack", 0, () -> NekoStack.excStack());
+		add("callstack", 0, () -> NekoStack.callStack());
 
 		// Hash tables
-		add("hnew", 1, (n:Dynamic) -> new NHash());
-		add("hget", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).get(k));
-		add("hmem", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).exists(k));
+		add("hnew", 1, (n:Dynamic) -> new NHash(int(n, "$hnew")));
+		add("hget", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> {
+			var c = hash(h).find(k, comparer(cmp, "$hget"));
+			c == null ? null : c.value;
+		});
+		add("hmem", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).find(k, comparer(cmp, "$hmem")) != null);
 		add("hset", 4, function(h:Dynamic, k:Dynamic, v:Dynamic, cmp:Dynamic) {
 			var t = hash(h);
-			var had = t.exists(k);
-			t.set(k, v);
-			return !had;
+			var c = t.find(k, comparer(cmp, "$hset"));
+			if (c != null) {
+				c.value = v;
+				return false;
+			}
+			t.add(k, v);
+			return true;
 		});
 		add("hadd", 3, function(h:Dynamic, k:Dynamic, v:Dynamic) {
 			hash(h).add(k, v);
 			return null;
 		});
-		add("hremove", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).remove(k));
-		add("hresize", 2, (h:Dynamic, n:Dynamic) -> null);
-		add("hkey", 1, (k:Dynamic) -> NHash.keyHash(k));
-		add("hcount", 1, (h:Dynamic) -> hash(h).count());
-		add("hsize", 1, (h:Dynamic) -> hash(h).count());
+		add("hremove", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).remove(k, comparer(cmp, "$hremove")));
+		add("hresize", 2, function(h:Dynamic, n:Dynamic) {
+			hash(h).resize(int(n, "$hresize"));
+			return null;
+		});
+		add("hkey", 1, (k:Dynamic) -> NHash.valHash(k));
+		add("hcount", 1, (h:Dynamic) -> hash(h).nitems);
+		add("hsize", 1, (h:Dynamic) -> hash(h).ncells);
 		add("hiter", 2, function(h:Dynamic, f:Dynamic) {
-			for (e in hash(h).entries())
-				Rt.call2(f, null, e.k, e.v);
+			var t = hash(h);
+			for (i in 0...t.ncells) {
+				var c = t.cells[i];
+				while (c != null) {
+					Rt.call2(f, null, c.key, c.value);
+					c = c.next;
+				}
+			}
 			return null;
 		});
 
@@ -295,6 +313,18 @@ class NekoBuiltins {
 		add("isbigendian", 0, () -> false);
 	}
 
+	// A hash table comparison: cmp must return the int 0 for equal keys
+	static function comparer(cmp:Dynamic, prim:String):Null<(Dynamic, Dynamic) -> Bool> {
+		if (cmp == null)
+			return null;
+		if (!Std.isOfType(cmp, NFunction) || (cmp : NFunction).nargs != 2)
+			Rt.error(prim);
+		return function(a, b) {
+			var r = Rt.call2(cmp, null, a, b);
+			return Rt.isInt(r) && (r : Int) == 0;
+		};
+	}
+
 	static function hash(h:Dynamic):NHash {
 		if (!Std.isOfType(h, NHash))
 			Rt.error("Invalid hashtable");
@@ -302,84 +332,167 @@ class NekoBuiltins {
 	}
 }
 
-// Neko's $hnew tables, keyed by value the way val_hash and val_compare see keys
+// One binding in a neko hash table
+class HCell {
+	public var hkey:Int;
+	public var key:Dynamic;
+	public var value:Dynamic;
+	public var next:Null<HCell>;
+
+	public function new(hkey:Int, key:Dynamic, value:Dynamic, next:Null<HCell>) {
+		this.hkey = hkey;
+		this.key = key;
+		this.value = value;
+		this.next = next;
+	}
+}
+
+// Neko's $hnew tables (vm/builtins.c), cell for cell: $hiter visits bindings in the
+//  order neko does, which programs that print or generate code from a table rely on
 @:keep
 class NHash {
-	var map = new Map<String, Array<{k:Dynamic, v:Dynamic}>>();
-	var size = 0;
+	static inline var DEF_SIZE = 7;
 
-	public function new() {}
+	public var cells:Array<Null<HCell>>;
+	public var ncells:Int;
+	public var nitems = 0;
 
-	public static function keyHash(k:Dynamic):Int
-		return nekomata.neko.Hash.field(key(k));
-
-	static function key(k:Dynamic):String {
-		return switch Rt.typeOf(k) {
-			case Rt.TINT | Rt.TFLOAT | Rt.TSTRING | Rt.TBOOL | Rt.TNULL: Rt.typeOf(k) + ":" + Rt.valueBytes(k).toHex();
-			default: "#";
-		}
+	public function new(size:Int) {
+		ncells = size <= 0 ? DEF_SIZE : size;
+		cells = [for (_ in 0...ncells) null];
 	}
 
-	function bucket(k:Dynamic):Array<{k:Dynamic, v:Dynamic}> {
-		var name = key(k);
-		var b = map.get(name);
-		if (b == null) {
-			b = [];
-			map.set(name, b);
+	// Finds the binding for k, comparing keys with cmp, or with $compare when null
+	public function find(k:Dynamic, cmp:Null<(Dynamic, Dynamic) -> Bool>):Null<HCell> {
+		var c = cells[valHash(k) % ncells];
+		while (c != null) {
+			if (cmp == null ? Rt.compare(k, c.key) == 0 : cmp(k, c.key))
+				return c;
+			c = c.next;
 		}
-		return b;
-	}
-
-	function find(k:Dynamic):Null<{k:Dynamic, v:Dynamic}> {
-		var b = map.get(key(k));
-		if (b != null)
-			for (e in b)
-				if (Rt.compare(e.k, k) == 0)
-					return e;
 		return null;
 	}
 
-	public function get(k:Dynamic):Dynamic {
-		var e = find(k);
-		return e == null ? null : e.v;
-	}
-
-	public function exists(k:Dynamic):Bool
-		return find(k) != null;
-
-	public function set(k:Dynamic, v:Dynamic) {
-		var e = find(k);
-		if (e != null)
-			e.v = v;
-		else
-			add(k, v);
-	}
-
+	// Adds a binding in front of any for the same key, as $hadd and $hset do
 	public function add(k:Dynamic, v:Dynamic) {
-		bucket(k).unshift({k: k, v: v});
-		size++;
+		var hkey = valHash(k);
+		if (nitems >= (ncells << 1))
+			resize(ncells << 1);
+		var i = hkey % ncells;
+		cells[i] = new HCell(hkey, k, v, cells[i]);
+		nitems++;
 	}
 
-	public function remove(k:Dynamic):Bool {
-		var b = map.get(key(k));
-		if (b != null)
-			for (e in b)
-				if (Rt.compare(e.k, k) == 0) {
-					b.remove(e);
-					size--;
-					return true;
-				}
+	public function remove(k:Dynamic, cmp:Null<(Dynamic, Dynamic) -> Bool>):Bool {
+		var i = valHash(k) % ncells;
+		var c = cells[i], prev:HCell = null;
+		while (c != null) {
+			if (cmp == null ? Rt.compare(k, c.key) == 0 : cmp(k, c.key)) {
+				if (prev == null)
+					cells[i] = c.next;
+				else
+					prev.next = c.next;
+				nitems--;
+				return true;
+			}
+			prev = c;
+			c = c.next;
+		}
 		return false;
 	}
 
-	public function count():Int
-		return size;
-
-	public function entries():Array<{k:Dynamic, v:Dynamic}> {
-		var result = [];
-		for (b in map)
-			for (e in b)
-				result.push(e);
-		return result;
+	public function resize(size:Int) {
+		var n = size <= 0 ? DEF_SIZE : size;
+		var cc:Array<Null<HCell>> = [for (_ in 0...n) null];
+		// Neko re-adds each chain from its end, which keeps the chain's order
+		function addRec(c:Null<HCell>) {
+			if (c == null)
+				return;
+			addRec(c.next);
+			var k = c.hkey % n;
+			c.next = cc[k];
+			cc[k] = c;
+		}
+		for (i in 0...ncells)
+			addRec(cells[i]);
+		cells = cc;
+		ncells = n;
 	}
+
+	// Neko's val_hash (vm/hash.c), stable across runs: it reads the contents of
+	//  strings, floats, arrays and objects, and ignores functions and abstracts
+	public static function valHash(v:Dynamic):Int {
+		var h = new HashState();
+		hashRec(v, h, null);
+		return h.h & 0x3FFFFFFF;
+	}
+
+	static inline function big(h:HashState, x:Int)
+		h.h = h.h * 65599 + x;
+
+	static inline function small(h:HashState, x:Int)
+		h.h = h.h * 19 + x;
+
+	// Bytes hash as C chars, signed on the compilers neko is built with
+	static inline function signed(b:Int):Int
+		return b >= 128 ? b - 256 : b;
+
+	static function hashRec(v:Dynamic, h:HashState, seen:Null<Array<Dynamic>>) {
+		switch Rt.typeOf(v) {
+			case Rt.TINT:
+				big(h, (v : Int));
+			case Rt.TNULL:
+				small(h, 0);
+			case Rt.TFLOAT:
+				// val_string of a float on 64 bits starts 4 bytes into the vfloat: the
+				//  padding before the double, then its low half, read from the end
+				var b = haxe.io.Bytes.alloc(8);
+				b.setDouble(0, Rt.num(v));
+				for (k in [3, 2, 1, 0])
+					small(h, signed(b.get(k)));
+				for (_ in 0...4)
+					small(h, 0);
+			case Rt.TBOOL:
+				small(h, (v : Bool) ? 1 : 0);
+			case Rt.TSTRING:
+				var b = Rt.bytes(v);
+				var k = b.length;
+				while (k > 0)
+					small(h, signed(b.get(--k)));
+			case t = Rt.TOBJECT | Rt.TARRAY:
+				if (seen != null) {
+					var k = 0;
+					var i = seen.length;
+					while (i-- > 0) {
+						if (seen[i] == v) {
+							small(h, k);
+							return;
+						}
+						k++;
+					}
+				}
+				var inner = seen == null ? [v] : seen.concat([v]);
+				if (t == Rt.TOBJECT) {
+					var o:NObject = v;
+					for (f in o.keys()) {
+						big(h, f);
+						hashRec(o.fields.get(f), h, inner);
+					}
+					if (o.proto != null)
+						hashRec(o.proto, h, inner);
+				} else {
+					var a:Array<Dynamic> = v;
+					var k = a.length;
+					while (k > 0)
+						hashRec(a[--k], h, inner);
+				}
+			default:
+		}
+	}
+}
+
+class HashState {
+	public var h = 0;
+
+	public function new() {}
 }

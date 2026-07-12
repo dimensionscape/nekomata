@@ -20,9 +20,17 @@ class Primitives {
 	public static function fail(name:String):Dynamic
 		return Rt.error(name);
 
-	static function init() {
+	public static function init() {
+		if (table != null)
+			return;
 		table = new Map();
 		StdPrims.register();
+		nekomata.rt.prims.StdSys.register();
+		nekomata.rt.prims.StdThread.register();
+		nekomata.rt.prims.StdDate.register();
+		nekomata.rt.prims.StdString.register();
+		nekomata.rt.prims.Regexp.register();
+		nekomata.rt.prims.StdSocket.register();
 	}
 }
 

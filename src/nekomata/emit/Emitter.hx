@@ -32,17 +32,28 @@ class Emitter {
 	static final loaderHash = nekomata.neko.Hash.field("loader");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
-	public static function emit(m:Module, cls:String):String
-		return new Emitter(m, cls).run();
+	// name is the module's name, the position of code that has no debug info
+	public static function emit(m:Module, cls:String, name = "module"):String
+		return new Emitter(m, cls, name).run();
 
-	function new(m:Module, cls:String) {
+	var name:String;
+
+	function new(m:Module, cls:String, name:String) {
 		this.m = m;
 		this.cls = cls;
+		this.name = name;
 		w = new CppiaWriter();
 	}
 
 	function local(name:String, type = CppiaWriter.DYNAMIC):Local
 		return {name: name, id: nextVar++, type: type};
+
+	// hxcpp passes stack frames as class::method::file::line, and Haxe's debug info names
+	//  positions like Class::method, so the separator is escaped; NekoStack restores it
+	public static inline var COLONS = "::";
+
+	static function frameFile(file:String):String
+		return StringTools.replace(file, "::", COLONS);
 
 	static function functionName(s:Scope):String
 		return s.global < 0 ? "body" : 'f${s.global}';
@@ -89,7 +100,7 @@ class Emitter {
 		for (i in 0...m.globals.length)
 			switch m.globals[i] {
 				case GFunction(_, nargs):
-					items[i] = call("func", [EStatic(cls, 'f$i'), EInt(nargs), moduleRef()]);
+					items[i] = call("func", [EStatic(cls, 'f$i'), EInt(nargs), moduleRef(), EInt(i)]);
 				default:
 			}
 		return EBlock([
@@ -138,7 +149,8 @@ class Emitter {
 		body.push(EReturn(ENull));
 
 		var args = [th, env].concat(slots.slice(0, nargs));
-		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body));
+		var pos = m.positions != null && s.entry < m.positions.length ? m.positions[s.entry] : null;
+		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body), pos == null ? '$name@' : frameFile(pos.file), pos == null ? s.entry : pos.line);
 	}
 
 	// The instructions that start a basic block
@@ -221,8 +233,11 @@ class Emitter {
 		var param = op.hasParam ? m.param(p) : 0;
 		var d = scope.depth.get(p);
 		var pos = m.positions != null && p < m.positions.length ? m.positions[p] : null;
+		// Without debug info the code index stands in for the line
+		var file = pos == null ? '$name@' : frameFile(pos.file);
+		var line = pos == null ? p : pos.line;
 		inline function emit(e:E)
-			out.push(pos == null ? e : EPos(pos.file, pos.line, e));
+			out.push(EPos(file, line, e));
 		inline function toAcc(e:E)
 			emit(set(acc, e));
 		inline function binary(name:String)
@@ -281,7 +296,17 @@ class Emitter {
 				toAcc(call('call$param', [v(acc), slot(d - 1)].concat(top(d - 1, param))));
 			case TailCall:
 				var n = param & 7;
-				emit(EReturn(call('call$n', [v(acc), v(th)].concat(top(d, n)))));
+				// Calling itself, the function loops with the new arguments, as neko
+				//  reuses the frame; the arguments sit above the slots they replace
+				if (scope.global >= 0 && n == scope.nargs) {
+					var rebind = [set(env, call("envOf", [v(acc)]))];
+					for (i in 0...n)
+						rebind.push(ESet(slot(i), slot(d - n + i)));
+					rebind.push(set(pc, EInt(scope.entry)));
+					rebind.push(EContinue);
+					emit(EIf(call("isSelf", [v(acc), moduleRef(), EInt(scope.global)]), EBlock(rebind)));
+				}
+				emit(EReturn(call("tailCall", [v(acc), v(th), EArrayDef(top(d, n))])));
 				return true;
 			case Ret:
 				emit(EReturn(v(acc)));

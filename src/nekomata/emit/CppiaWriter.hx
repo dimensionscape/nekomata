@@ -97,7 +97,10 @@ class CppiaWriter {
 		w("0\n");
 	}
 
-	public function staticFunction(name:String, args:Array<Local>, ret:String, fnBody:E) {
+	// file and line are the function's own position, which stack frames report
+	public function staticFunction(name:String, args:Array<Local>, ret:String, fnBody:E, file:String, line:Int) {
+		this.file = file;
+		this.line = line;
 		w("FUNCTION 1 0 ");
 		wi(stringId(name));
 		wi(typeId(ret));

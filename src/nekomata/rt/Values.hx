@@ -85,6 +85,10 @@ enum abstract FunctionKind(Int) {
 	var Primitive;
 	// fn(this, args...), for loader methods that read val_this()
 	var PrimitiveThis;
+	// fn(env, args array), after the count is checked against nargs: what $apply,
+	//  $closure and partial application make, with env holding [function, this,
+	//  bound arguments...] as neko's closures hold theirs
+	var Bound;
 }
 
 @:keep
@@ -97,14 +101,33 @@ class NFunction {
 	public var env:Array<Dynamic>;
 	public var module:Null<NModule>;
 	public var name:String;
+	// The module global a bytecode function was defined as, which tells a tail call
+	//  whether it calls the function it is in
+	public var global:Int;
 
-	public function new(fn:Dynamic, nargs:Int, kind:FunctionKind, ?env:Array<Dynamic>, ?module:NModule, name = "") {
+	public function new(fn:Dynamic, nargs:Int, kind:FunctionKind, ?env:Array<Dynamic>, ?module:NModule, name = "", global = -1) {
 		this.fn = fn;
 		this.nargs = nargs;
 		this.kind = kind;
 		this.env = env;
 		this.module = module;
 		this.name = name;
+		this.global = global;
+	}
+}
+
+// A tail call a function returns for its caller to make, so that calls in tail
+//  position do not grow the stack, as neko's TailCall reuses the frame
+@:keep
+class TailCall {
+	public var f:Dynamic;
+	public var th:Dynamic;
+	public var args:Array<Dynamic>;
+
+	public function new(f:Dynamic, th:Dynamic, args:Array<Dynamic>) {
+		this.f = f;
+		this.th = th;
+		this.args = args;
 	}
 }
 

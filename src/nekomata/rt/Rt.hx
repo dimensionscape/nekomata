@@ -117,6 +117,18 @@ class Rt {
 	public static function caught(e:Dynamic):Dynamic {
 		if (vt(e) == VT_STRING)
 			return NString.of((e : String));
+		if (typeOf(e) == TABSTRACT && !Std.isOfType(e, NAbstract)) {
+			// An error the host raised, such as a null access: neko would have its message
+			var text = Std.isOfType(e, haxe.Exception) ? (e : haxe.Exception).message : Std.string(e);
+			if (trace) {
+				Sys.stderr().writeString('[nekomata] host error: $text
+');
+				for (item in haxe.CallStack.exceptionStack())
+					Sys.stderr().writeString('  ${Std.string(item)}
+');
+			}
+			return NString.of(text);
+		}
 		return e;
 	}
 
@@ -160,16 +172,20 @@ class Rt {
 
 	static final NO_OP = new NObject();
 
+	// Whether objectOp found no operator, by identity: an operator may return anything
+	static inline function missing(r:Dynamic):Bool
+		return untyped __cpp__("({0}.mPtr == {1}.mPtr)", r, NO_OP);
+
 	public static function add(a:Dynamic, b:Dynamic):Dynamic {
 		if (isInt(a) && isInt(b))
 			return (a : Int) + (b : Int);
 		if (isNumber(a) && isNumber(b))
 			return new NFloat(num(a) + num(b));
-		var r = objectOp(a, b, "__add");
-		if (r != NO_OP)
+		var r:Dynamic = objectOp(a, b, "__add");
+		if (!missing(r))
 			return r;
 		r = objectOp(b, a, "__radd");
-		if (r != NO_OP)
+		if (!missing(r))
 			return r;
 		if (isString(a) || isString(b)) {
 			var buf = new BytesBuffer();
@@ -200,11 +216,11 @@ class Rt {
 				default: x % y;
 			});
 		}
-		var r = objectOp(a, b, field);
-		if (r != NO_OP)
+		var r:Dynamic = objectOp(a, b, field);
+		if (!missing(r))
 			return r;
 		r = objectOp(b, a, rfield);
-		if (r != NO_OP)
+		if (!missing(r))
 			return r;
 		return opError(name);
 	}
@@ -221,11 +237,11 @@ class Rt {
 	public static function div(a:Dynamic, b:Dynamic):Dynamic {
 		if (isNumber(a) && isNumber(b))
 			return new NFloat(num(a) / num(b));
-		var r = objectOp(a, b, "__div");
-		if (r != NO_OP)
+		var r:Dynamic = objectOp(a, b, "__div");
+		if (!missing(r))
 			return r;
 		r = objectOp(b, a, "__rdiv");
-		if (r != NO_OP)
+		if (!missing(r))
 			return r;
 		return opError("/");
 	}
@@ -381,8 +397,8 @@ class Rt {
 			return k < 0 || k >= arr.length ? null : arr[k];
 		}
 		if (Std.isOfType(a, NObject)) {
-			var r = objectOp(a, i, "__get");
-			if (r != NO_OP)
+			var r:Dynamic = objectOp(a, i, "__get");
+			if (!missing(r))
 				return r;
 			return error("Unsupported operation");
 		}
@@ -426,44 +442,95 @@ class Rt {
 	// -- Functions and calls --
 
 	// A module function value; env is filled in by MakeEnv
-	public static function func(fn:Dynamic, nargs:Int, module:NModule):NFunction
-		return new NFunction(fn, nargs, Bytecode, null, module);
+	public static function func(fn:Dynamic, nargs:Int, module:NModule, global:Int):NFunction
+		return new NFunction(fn, nargs, Bytecode, null, module, "", global);
 
 	public static function makeEnv(f:Dynamic, env:Array<Dynamic>):NFunction {
 		if (!Std.isOfType(f, NFunction) || (f : NFunction).kind != Bytecode)
 			error("Invalid environment");
 		var fn:NFunction = f;
-		return new NFunction(fn.fn, fn.nargs, Bytecode, env, fn.module);
+		return new NFunction(fn.fn, fn.nargs, Bytecode, env, fn.module, "", fn.global);
 	}
 
-	static function invalidCall():Dynamic
+	// Whether a tail call calls the function it is in, so it can loop instead
+	public static function isSelf(f:Dynamic, module:Dynamic, global:Int):Bool {
+		if (!Std.isOfType(f, NFunction))
+			return false;
+		var fn:NFunction = f;
+		return fn.global == global && fn.kind == Bytecode && fn.module == module;
+	}
+
+	public static inline function envOf(f:Dynamic):Array<Dynamic>
+		return (f : NFunction).env;
+
+	// A tail call becomes a TailCall for the caller to make once the function has
+	//  returned: its frame is gone, as neko's TailCall pops it before calling, so neither
+	//  the stack nor neko's stack traces keep it
+	public static function tailCall(f:Dynamic, th:Dynamic, args:Array<Dynamic>):Dynamic
+		return new TailCall(f, th, args);
+
+	// What a bytecode function returned, once the tail calls it handed back are made
+	public static inline function finish(r:Dynamic):Dynamic {
+		while (Std.isOfType(r, TailCall)) {
+			var t:TailCall = r;
+			r = callArgs(t.f, t.th, t.args);
+		}
+		return r;
+	}
+
+	// NEKOMATA_TRACE=1 says what each failed call was given
+	static var trace = Sys.getEnv("NEKOMATA_TRACE") == "1";
+
+	// The translated neko frames on the stack, innermost first
+	public static function printStack():Void {
+		for (item in haxe.CallStack.callStack())
+			switch item {
+				case FilePos(_, file, line, _) if (!StringTools.startsWith(file, "nekomata/")):
+					Sys.stderr().writeString('  at $file line $line
+');
+				default:
+			}
+	}
+
+	static function invalidCall(f:Dynamic, n:Int):Dynamic {
+		if (trace) {
+			var what = Std.isOfType(f, NFunction) ? 'a function of ${(f : NFunction).nargs} arguments ${(f : NFunction).name}' : 'a value of type ${typeOf(f)} (${valueBytes(f).toString().substr(0, 60)})';
+			Sys.stderr().writeString('[nekomata] invalid call: $what, given $n
+');
+			printStack();
+		}
 		return error("Invalid call");
+	}
 
 	// Calls f with the arguments in an array, the way $call and $apply do
 	public static function callArgs(f:Dynamic, th:Dynamic, args:Array<Dynamic>):Dynamic {
-		if (!Std.isOfType(f, NFunction))
-			return invalidCall();
-		var fn:NFunction = f;
 		var n = args.length;
+		if (!Std.isOfType(f, NFunction))
+			return invalidCall(f, n);
+		var fn:NFunction = f;
 		switch fn.kind {
 			case Bytecode:
 				if (fn.nargs != n)
-					return invalidCall();
+					return invalidCall(f, n);
 				var all:Array<Dynamic> = [th, fn.env];
-				return Reflect.callMethod(null, fn.fn, all.concat(args));
+				return finish(Reflect.callMethod(null, fn.fn, all.concat(args)));
 			case Primitive:
 				if (fn.nargs == NFunction.VAR_ARGS)
 					return fn.fn(args);
 				if (fn.nargs != n)
-					return invalidCall();
+					return invalidCall(f, n);
 				return Reflect.callMethod(null, fn.fn, args);
 			case PrimitiveThis:
 				if (fn.nargs == NFunction.VAR_ARGS)
 					return fn.fn(th, args);
 				if (fn.nargs != n)
-					return invalidCall();
+					return invalidCall(f, n);
 				var all:Array<Dynamic> = [th];
 				return Reflect.callMethod(null, fn.fn, all.concat(args));
+			case Bound:
+				if (fn.nargs != NFunction.VAR_ARGS && fn.nargs != n)
+					return invalidCall(f, n);
+				return fn.fn(fn.env, args);
 		}
 	}
 
@@ -473,11 +540,13 @@ class Rt {
 			if (fn.nargs == 0)
 				switch fn.kind {
 					case Bytecode:
-						return fn.fn(th, fn.env);
+						return finish(fn.fn(th, fn.env));
 					case Primitive:
 						return fn.fn();
 					case PrimitiveThis:
 						return fn.fn(th);
+					case Bound:
+						return fn.fn(fn.env, []);
 				}
 		}
 		return callArgs(f, th, []);
@@ -489,11 +558,13 @@ class Rt {
 			if (fn.nargs == 1)
 				switch fn.kind {
 					case Bytecode:
-						return fn.fn(th, fn.env, a);
+						return finish(fn.fn(th, fn.env, a));
 					case Primitive:
 						return fn.fn(a);
 					case PrimitiveThis:
 						return fn.fn(th, a);
+					case Bound:
+						return fn.fn(fn.env, [a]);
 				}
 		}
 		return callArgs(f, th, [a]);
@@ -505,11 +576,13 @@ class Rt {
 			if (fn.nargs == 2)
 				switch fn.kind {
 					case Bytecode:
-						return fn.fn(th, fn.env, a, b);
+						return finish(fn.fn(th, fn.env, a, b));
 					case Primitive:
 						return fn.fn(a, b);
 					case PrimitiveThis:
 						return fn.fn(th, a, b);
+					case Bound:
+						return fn.fn(fn.env, [a, b]);
 				}
 		}
 		return callArgs(f, th, [a, b]);
@@ -521,11 +594,13 @@ class Rt {
 			if (fn.nargs == 3)
 				switch fn.kind {
 					case Bytecode:
-						return fn.fn(th, fn.env, a, b, c);
+						return finish(fn.fn(th, fn.env, a, b, c));
 					case Primitive:
 						return fn.fn(a, b, c);
 					case PrimitiveThis:
 						return fn.fn(th, a, b, c);
+					case Bound:
+						return fn.fn(fn.env, [a, b, c]);
 				}
 		}
 		return callArgs(f, th, [a, b, c]);
@@ -546,9 +621,23 @@ class Rt {
 			return callArgs(f, th, args);
 		if (args.length > fn.nargs)
 			return error("$apply");
-		var bound = args.copy();
-		return new NFunction(function(rest:Array<Dynamic>) return callArgs(fn, null, bound.concat(rest)), fn.nargs - args.length, Primitive);
+		return bind(fn, th, args, fn.nargs - args.length);
 	}
+
+	// The one native function every bound function shares, so same_closure can tell
+	//  two of them apart by their environments alone, as neko does
+	public static var boundCall:Dynamic = function(env:Array<Dynamic>, args:Array<Dynamic>):Dynamic
+		return callArgs(env[0], env[1], env.slice(2).concat(args));
+
+	// f with this and the first arguments bound, taking nargs more
+	public static function bind(f:Dynamic, th:Dynamic, args:Array<Dynamic>, nargs:Int):NFunction {
+		var env:Array<Dynamic> = [f, th];
+		return new NFunction(boundCall, nargs, Bound, env.concat(args));
+	}
+
+	// Physical equality of neko values: ints by value, everything else by identity
+	public static function physEqual(a:Dynamic, b:Dynamic):Bool
+		return same(a, b);
 
 	// JumpTable: the case for an int below n, or n for the default
 	public static function tableIndex(v:Dynamic, n:Int):Int {

@@ -1,0 +1,14 @@
+# What every build of the Nekomata host shares; build.hxml adds the output folder.
+# A second build can go elsewhere: haxe host.hxml --cpp bin/other
+-cp src
+--main nekomata.Main
+-D scriptable
+--dce no
+# The runtime is only named by generated scripts, so nothing else pulls it in
+--macro include("nekomata.rt")
+-D HXCPP_CATCH_SEGV
+# Neko reports where an uncaught exception came from, and $callstack and $excstack
+#  read the stack, so script frames keep their file and line
+-D HXCPP_STACK_TRACE
+-D HXCPP_STACK_LINE
+-D HAXE_OUTPUT_FILE=nekomata

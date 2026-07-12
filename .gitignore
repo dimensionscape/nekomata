@@ -2,3 +2,5 @@ bin/
 *.dump
 .haxelib/
 export_classes.info
+# Fetched by test/upstream/fetch.sh
+test/upstream/*/

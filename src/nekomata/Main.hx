@@ -9,6 +9,10 @@ import nekomata.rt.Values;
 
 // The Nekomata host: runs neko .n modules and cppia scripts.
 //  nekomata [-jit] [--emit file.cppia] <file.n | file.cppia> [args...]
+// Neko code can recurse as deep as neko allows, so Windows gets a native stack that
+//  matches: 256M reserved, committed only as it is used, for the main thread and
+//  every thread the program starts
+@:buildXml('<target id="haxe"><flag value="-STACK:268435456" if="windows"/></target>')
 class Main {
 	static var moduleCount = 0;
 	static var emitTo:Null<String>;
@@ -35,16 +39,18 @@ class Main {
 	}
 
 	static function runNeko(file:String, bytes:haxe.io.Bytes, args:Array<String>) {
+		Boot.programPath = sys.FileSystem.fullPath(file);
+		Boot.prepareThread();
+		// Filled before any neko thread can look them up
+		nekomata.rt.NekoBuiltins.init();
+		nekomata.rt.Primitives.init();
 		var loader = NekoLoader.create(args);
 		NekoLoader.loadModule = loadModuleFile;
 		try {
 			load(file, bytes, loader);
 		} catch (e:Dynamic) {
-			var out = Sys.stderr();
-			out.writeString("Uncaught exception - ");
-			var b = Rt.valueBytes(Rt.caught(e));
-			out.writeBytes(b, 0, b.length);
-			out.writeString("\n");
+			var report = nekomata.rt.NekoStack.report(e);
+			Sys.stderr().writeBytes(report, 0, report.length);
 			Sys.exit(1);
 		}
 	}
@@ -52,23 +58,24 @@ class Main {
 	// Translates a module to cppia and runs it, returning its exports
 	static function load(name:String, bytes:haxe.io.Bytes, loader:NObject):NObject {
 		var m = Reader.read(bytes);
-		var text = Emitter.emit(m, 'NekoModule${moduleCount++}');
+		var text = Emitter.emit(m, 'NekoModule${moduleCount++}', name);
 		if (emitTo != null) {
 			sys.io.File.saveContent(emitTo, text);
 			emitTo = null;
 		}
-		Boot.pendingName = name;
-		Boot.pendingLoader = loader;
+		var nm = new NModule(name, loader);
+		Boot.pending = nm;
 		var module = cpp.cppia.Module.fromString(text);
 		module.boot();
 		module.run();
-		return Boot.last.exports;
+		return nm.exports;
 	}
 
 	static function loadModuleFile(name:String, loader:NObject):NObject {
 		var file = StringTools.endsWith(name, ".n") ? name : name + ".n";
 		if (!sys.FileSystem.exists(file))
-			Rt.error("Module not found : " + name);
+			// Neko's message carries where in its loader it failed
+			Rt.error("load.c(181) : Module not found : " + name);
 		return load(name, sys.io.File.getBytes(file), loader);
 	}
 }

@@ -8,6 +8,9 @@ class NekoLoader {
 	// Reads, translates and runs a module, returning its exports; set by the host
 	public static var loadModule:(name:String, loader:NObject) -> NObject;
 
+	// NEKOMATA_TRACE=1 reports each primitive a module loads that the runtime lacks
+	static var trace = Sys.getEnv("NEKOMATA_TRACE") == "1";
+
 	// Modules already loaded, by name, as the loader's cache field
 	static var cache = new Map<String, NObject>();
 
@@ -35,6 +38,9 @@ class NekoLoader {
 		var f = Primitives.find(name, n);
 		if (f != null)
 			return f;
+		if (trace)
+			Sys.stderr().writeString('[nekomata] no primitive $name($n)
+');
 		// Neko fails here; the Haxe std loads many primitives it never calls, so the
 		//  error waits until the primitive is called
 		return new NFunction(function(args:Array<Dynamic>):Dynamic return Rt.error('Primitive not found : $name($n)'), NFunction.VAR_ARGS,
@@ -48,6 +54,9 @@ class NekoLoader {
 		var exports = cache.get(n);
 		if (exports != null)
 			return exports;
+		if (trace)
+			Sys.stderr().writeString('[nekomata] loading module $n
+');
 		exports = loadModule(n, th);
 		cache.set(n, exports);
 		return exports;
