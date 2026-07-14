@@ -31,6 +31,8 @@ class Primitives {
 		nekomata.rt.prims.StdString.register();
 		nekomata.rt.prims.Regexp.register();
 		nekomata.rt.prims.StdSocket.register();
+		nekomata.rt.prims.Zlib.register();
+		nekomata.rt.prims.Ssl.register();
 	}
 }
 
