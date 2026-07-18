@@ -309,7 +309,12 @@ class NekoBuiltins {
 
 		add("version", 0, () -> 241);
 		add("neko_build_year", 0, () -> 2026);
-		add("setresolver", 1, (f:Dynamic) -> null);
+		add("setresolver", 1, function(f:Dynamic) {
+			if (f != null && (!Std.isOfType(f, NFunction) || (f : NFunction).nargs != 2))
+				Rt.error("$setresolver");
+			Rt.resolver.value = f;
+			return null;
+		});
 		add("isbigendian", 0, () -> false);
 	}
 

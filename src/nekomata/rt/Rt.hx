@@ -394,15 +394,31 @@ class Rt {
 		return (proto : NObject).copy();
 	}
 
+	// What $setresolver set, per thread as neko's is per VM: called for a field an
+	//  object and its prototypes lack
+	public static var resolver = new sys.thread.Tls<Dynamic>();
+
+	// Neko names the field when some module declared its name
+	static function invalidFieldAccess(h:Int):Dynamic {
+		var n = names.get(h);
+		return error(n == null ? "Invalid field access" : "Invalid field access : " + n);
+	}
+
 	public static function field(o:Dynamic, h:Int):Dynamic {
 		if (!Std.isOfType(o, NObject))
-			return error("Invalid field access : " + fieldName(h));
-		return (o : NObject).find(h);
+			return invalidFieldAccess(h);
+		var v = (o : NObject).find(h);
+		if (v == null) {
+			var r = resolver.value;
+			if (r != null && !(o : NObject).has(h))
+				return call2(r, null, o, h);
+		}
+		return v;
 	}
 
 	public static function setField(o:Dynamic, h:Int, v:Dynamic):Void {
 		if (!Std.isOfType(o, NObject))
-			error("Invalid field access : " + fieldName(h));
+			invalidFieldAccess(h);
 		(o : NObject).fields.set(h, v);
 	}
 
