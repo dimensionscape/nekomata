@@ -141,7 +141,7 @@ class Emitter {
 				set(th, call("trapThis", [v(traps)])),
 				set(pc, call("trapPc", [v(traps)])),
 				call("trapPop", [v(traps)]),
-				set(acc, call("caught", [EVar(ex.id)]))
+				set(acc, call("trapped", [EVar(ex.id)]))
 			]);
 			dispatch = ETry(dispatch, ex, handler);
 		}

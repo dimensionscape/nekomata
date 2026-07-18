@@ -102,7 +102,14 @@ class Rt {
 
 	// -- Errors and exceptions --
 
+	// cppia's JIT keeps a pending exception where null means none, so it catches a thrown
+	//  null as an empty string; null travels as this marker instead
+	static final NULL_THROWN = new NullThrown();
+
 	public static function raise(v:Dynamic):Dynamic {
+		if (v == null)
+			v = NULL_THROWN;
+		NekoStack.recordThrow(v);
 		untyped __cpp__("::hx::Throw({0})", v);
 		return null;
 	}
@@ -113,8 +120,17 @@ class Rt {
 	static function opError(op:String):Dynamic
 		return error('Invalid operation ($op)');
 
+	// What a trap that catches e leaves in the accumulator, recording the stack
+	//  $excstack then returns
+	public static function trapped(e:Dynamic):Dynamic {
+		NekoStack.catchAt(e);
+		return caught(e);
+	}
+
 	// The value a translated catch sees: errors the host raises become neko strings
 	public static function caught(e:Dynamic):Dynamic {
+		if (Std.isOfType(e, NullThrown))
+			return null;
 		if (vt(e) == VT_STRING)
 			return NString.of((e : String));
 		if (typeOf(e) == TABSTRACT && !Std.isOfType(e, NAbstract)) {

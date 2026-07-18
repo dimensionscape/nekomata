@@ -45,9 +45,44 @@ class NekoStack {
 		return e;
 	}
 
-	// $excstack: the stack the exception being handled was thrown from
-	public static function excStack():Array<Dynamic>
+	// The neko stack where the last value was raised, as neko's vm->exc_stack starts
+	static var thrown = new sys.thread.Tls<{value:Dynamic, stack:Array<Dynamic>}>();
+	// What $excstack returns: the part of it inside the trap that caught the value
+	static var caughtStack = new sys.thread.Tls<Array<Dynamic>>();
+
+	public static function recordThrow(v:Dynamic):Void
+		thrown.value = {value: v, stack: callSites(CallStack.callStack())};
+
+	// The stack v was raised from; hxcpp's own record of the unwind for errors the host
+	//  raised without the runtime, which hold fewer neko frames
+	static function raisedFrom(v:Dynamic):Array<Dynamic> {
+		var t = thrown.value;
+		if (t != null && Rt.physEqual(t.value, v))
+			return t.stack;
 		return callSites(CallStack.exceptionStack());
+	}
+
+	// A trap caught v: neko keeps the frames from the catching function inward
+	public static function catchAt(v:Dynamic):Void {
+		var stack = raisedFrom(v);
+		var depth = 0;
+		for (e in entries(CallStack.callStack()))
+			if (e != null)
+				depth++;
+		var seen = 0, start = 0;
+		for (i in 0...stack.length)
+			if (stack[i] != null && ++seen == depth) {
+				start = i;
+				break;
+			}
+		caughtStack.value = stack.slice(start);
+	}
+
+	// $excstack: the stack the exception last caught was raised from
+	public static function excStack():Array<Dynamic> {
+		var s = caughtStack.value;
+		return s == null ? [] : s.copy();
+	}
 
 	// $callstack: the frames of the calls that led here
 	public static function callStack():Array<Dynamic> {
@@ -59,7 +94,7 @@ class NekoStack {
 	// What neko prints for an exception nothing caught (vm/main.c report)
 	public static function report(e:Dynamic):haxe.io.Bytes {
 		var buf = new haxe.io.BytesBuffer();
-		for (s in excStack()) {
+		for (s in raisedFrom(e)) {
 			buf.addString("Called from ");
 			if (s == null)
 				buf.addString("a C function");

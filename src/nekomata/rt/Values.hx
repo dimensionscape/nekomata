@@ -157,3 +157,9 @@ class NModule {
 		exports = new NObject();
 	}
 }
+
+// A thrown null, which Rt.raise throws in its place
+@:keep
+class NullThrown {
+	public function new() {}
+}
