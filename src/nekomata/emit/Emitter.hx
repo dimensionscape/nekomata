@@ -306,7 +306,10 @@ class Emitter {
 					rebind.push(EContinue);
 					emit(EIf(call("isSelf", [v(acc), moduleRef(), EInt(scope.global)]), EBlock(rebind)));
 				}
-				emit(EReturn(call("tailCall", [v(acc), v(th), EArrayDef(top(d, n))])));
+				if (n <= 3)
+					emit(EReturn(call('tail$n', [v(acc), v(th)].concat(top(d, n)))));
+				else
+					emit(EReturn(call("tailCall", [v(acc), v(th), EArrayDef(top(d, n))])));
 				return true;
 			case Ret:
 				emit(EReturn(v(acc)));
