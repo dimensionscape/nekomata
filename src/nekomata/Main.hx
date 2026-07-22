@@ -56,9 +56,15 @@ class Main {
 	}
 
 	// Translates a module to cppia and runs it, returning its exports
+	// NEKOMATA_TIME=1 reports how long each module takes to read, translate and load
+	static var timing = Sys.getEnv("NEKOMATA_TIME") == "1";
+
 	static function load(name:String, bytes:haxe.io.Bytes, loader:NObject):NObject {
+		var t0 = haxe.Timer.stamp();
 		var m = Reader.read(bytes);
+		var t1 = haxe.Timer.stamp();
 		var text = Emitter.emit(m, 'NekoModule${moduleCount++}', name);
+		var t2 = haxe.Timer.stamp();
 		if (emitTo != null) {
 			sys.io.File.saveContent(emitTo, text);
 			emitTo = null;
@@ -66,7 +72,14 @@ class Main {
 		var nm = new NModule(name, loader);
 		Boot.pending = nm;
 		var module = cpp.cppia.Module.fromString(text);
+		var t3 = haxe.Timer.stamp();
 		module.boot();
+		var t4 = haxe.Timer.stamp();
+		if (timing) {
+			inline function ms(a:Float, b:Float)
+				return Std.string(Math.round((b - a) * 1000));
+			Sys.stderr().writeString('[nekomata] $name: read ${ms(t0, t1)} ms, translate ${ms(t1, t2)} ms (${text.length} bytes), parse ${ms(t2, t3)} ms, link ${ms(t3, t4)} ms\n');
+		}
 		module.run();
 		return nm.exports;
 	}
