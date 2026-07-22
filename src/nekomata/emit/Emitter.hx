@@ -7,16 +7,30 @@ import nekomata.neko.StackCheck;
 
 // Translates a neko module to cppia. Each neko function becomes a static function
 //  (this, env, args...) whose stack slots are locals, run by a loop that switches on
-//  the basic block to run next
+//  the basic block to run next.
+//
+// Within a run of code the accumulator and the stack slots are kept as expressions
+//  until something needs them in a local, so most instructions become part of one
+//  statement rather than a statement each. A block that only one other block reaches
+//  is written where that block goes to it, inside the if of a conditional jump, so
+//  only blocks reached from more than one place, such as loop heads, are cases of the
+//  switch. Calls of the module's own functions, through a global that holds the
+//  function whenever they run, call its static function directly.
 class Emitter {
 	static inline var RT = "nekomata.rt.Rt";
 	static inline var BUILTINS = "nekomata.rt.NekoBuiltins";
 	static inline var BOOT = "nekomata.rt.Boot";
 
+	// Set by the host: whether the runtime has a builtin, so that the module can look
+	//  it up once. Without it, every builtin is taken to be there
+	public static var builtinExists:Null<Int->Bool>;
+
 	var m:Module;
 	var cls:String;
 	var w:CppiaWriter;
 	var nextVar = 1;
+	var name:String;
+	var jit:Bool;
 
 	// Locals of the function being written
 	var th:Local;
@@ -26,22 +40,42 @@ class Emitter {
 	var traps:Local;
 	var slots:Array<Local>;
 	var scope:Scope;
-	var file = "";
-	var line = 0;
+	var hasTraps:Bool;
+
+	// Module analysis
+	var scopes:Array<Scope>;
+	// How many SetGlobal instructions write each global
+	var writes:Array<Int>;
+	// For a global that holds one of the module's functions whenever any function
+	//  runs: that function's global, else -1
+	var heldFunction:Array<Int>;
+	// Functions that can return a TailCall for their caller to make
+	var mayTail = new Map<Int, Bool>();
+	// Instructions some jump goes to
+	var targets = new Map<Int, Bool>();
+	// The builtins the module names, by hash, as their index in its B array
+	var builtinIndex = new Map<Int, Int>();
+	var builtinHashes:Array<Int> = [];
 
 	static final loaderHash = nekomata.neko.Hash.field("loader");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
-	// name is the module's name, the position of code that has no debug info
-	public static function emit(m:Module, cls:String, name = "module"):String
-		return new Emitter(m, cls, name).run();
+	// How deep blocks written inline nest, at most, so the loader's recursion stays shallow
+	static inline var MAX_NEST = 100;
+	// The most cases one switch has under the JIT, which tests them one after another;
+	//  more are split by comparing the code index
+	static inline var JIT_SWITCH = 6;
 
-	var name:String;
+	// name is the module's name, the position of code that has no debug info. jit says
+	//  the module will run under cppia's JIT
+	public static function emit(m:Module, cls:String, name = "module", jit = false):haxe.io.Bytes
+		return new Emitter(m, cls, name, jit).run();
 
-	function new(m:Module, cls:String, name:String) {
+	function new(m:Module, cls:String, name:String, jit:Bool) {
 		this.m = m;
 		this.cls = cls;
 		this.name = name;
+		this.jit = jit;
 		w = new CppiaWriter();
 	}
 
@@ -58,16 +92,122 @@ class Emitter {
 	static function functionName(s:Scope):String
 		return s.global < 0 ? "body" : 'f${s.global}';
 
-	function run():String {
-		var scopes = StackCheck.run(m);
-		w.beginClass(cls, scopes.length + 2);
+	function run():haxe.io.Bytes {
+		scopes = StackCheck.run(m);
+		analyse();
+		w.beginClass(cls, scopes.length + 3);
 		w.staticVar("G", CppiaWriter.ARRAY);
 		w.staticVar("M", CppiaWriter.DYNAMIC);
+		w.staticVar("B", CppiaWriter.ARRAY);
 		for (s in scopes)
 			writeFunction(s);
 		w.main(mainExpr());
-		return w.toString();
+		return w.toBytes();
 	}
+
+	// -- Module analysis --
+
+	function analyse() {
+		var n = m.globals.length;
+		writes = [for (_ in 0...n) 0];
+		heldFunction = [for (_ in 0...n) -1];
+		for (s in scopes) {
+			targets.set(s.entry, true);
+			for (p in s.pcs()) {
+				if (p >= m.codeSize)
+					continue;
+				switch m.op(p) {
+					case Jump | JumpIf | JumpIfNot | Trap:
+						targets.set(m.target(p), true);
+					case JumpTable:
+						for (k in 0...m.param(p) + 1)
+							targets.set(p + 2 + 2 * k, true);
+					case SetGlobal:
+						writes[m.param(p)]++;
+					default:
+				}
+			}
+		}
+		// A global the module body sets to one of the module's functions before it runs
+		//  anything that could run a function, and that nothing sets to anything else,
+		//  holds that function whenever a function runs
+		var stored = [for (_ in 0...n) -2];
+		for (s in scopes)
+			for (p in s.pcs()) {
+				if (p >= m.codeSize || m.op(p) != SetGlobal)
+					continue;
+				var g = m.param(p), f = storedFunction(p);
+				stored[g] = stored[g] == -2 || stored[g] == f ? f : -1;
+			}
+		for (g in setBeforeCalls())
+			if (stored[g] >= 0)
+				heldFunction[g] = stored[g];
+		for (i in 0...n)
+			switch m.globals[i] {
+				case GFunction(_, _) if (writes[i] == 0):
+					heldFunction[i] = i;
+				default:
+			}
+		for (s in scopes)
+			if (s.global >= 0)
+				for (p in s.pcs())
+					if (p < m.codeSize && m.op(p) == TailCall && !((m.param(p) & 7) == s.nargs && accFunction(p) == s.global))
+						mayTail.set(s.global, true);
+	}
+
+	// The function an AccGlobal just before p, with no jump to p, puts in the
+	//  accumulator, when it is a function global nothing writes; else -1
+	function storedFunction(p:Int):Int {
+		if (targets.exists(p) || p < 2 || !m.isOp[p - 2] || m.op(p - 2) != AccGlobal)
+			return -1;
+		var f = m.param(p - 2);
+		return switch m.globals[f] {
+			case GFunction(_, _) if (writes[f] == 0): f;
+			default: -1;
+		}
+	}
+
+	// The globals the module body sets before it runs anything that could run neko code
+	function setBeforeCalls():Array<Int> {
+		var result = [];
+		var p = 0, seen = new Map<Int, Bool>();
+		while (p < m.codeSize && !seen.exists(p)) {
+			seen.set(p, true);
+			switch m.op(p) {
+				case Jump:
+					p = m.target(p);
+					continue;
+				case SetGlobal:
+					result.push(m.param(p));
+				case AccNull | AccTrue | AccFalse | AccThis | AccInt | AccStack | AccStack0 | AccStack1 | AccGlobal | AccBuiltin | SetStack | Push |
+					Pop | Loop | MakeArray:
+				default:
+					return result;
+			}
+			p = m.next(p);
+		}
+		return result;
+	}
+
+	// The function an AccGlobal just before p, with no jump to p, gives for a call
+	function accFunction(p:Int):Int {
+		if (targets.exists(p) || p < 2 || !m.isOp[p - 2] || m.op(p - 2) != AccGlobal)
+			return -1;
+		return heldFunction[m.param(p - 2)];
+	}
+
+	// Whether a global's value can be read at any time in the code, rather than where
+	//  the instruction reading it is
+	function constantGlobal(g:Int, inBody:Bool):Bool
+		return writes[g] == 0 || (!inBody && heldFunction[g] >= 0);
+
+	function functionArgs(g:Int):Int
+		return switch m.globals[g] {
+			case GFunction(_, nargs): nargs;
+			default: -2;
+		}
+
+	// -- Module main --
 
 	inline function call(name:String, args:Array<E>):E
 		return ECallStatic(RT, name, args);
@@ -84,12 +224,22 @@ class Emitter {
 	inline function moduleRef():E
 		return EStatic(cls, "M");
 
+	function builtin(h:Int):E {
+		var k = builtinIndex.get(h);
+		if (k == null) {
+			k = builtinHashes.length;
+			builtinHashes.push(h);
+			builtinIndex.set(h, k);
+		}
+		return EArrayI(EStatic(cls, "B"), EInt(k));
+	}
+
 	function mainExpr():E {
 		var items = [];
-		for (g in m.globals)
-			items.push(switch g {
+		for (i in 0...m.globals.length)
+			items.push(switch m.globals[i] {
 				case GFunction(_, nargs):
-					null; // filled below, knowing the global's index
+					call("func", [EStatic(cls, 'f$i'), EInt(nargs), moduleRef(), EInt(i)]);
 				case GString(b):
 					call("stringOf", [EString(b.toHex())]);
 				case GFloat(text):
@@ -97,19 +247,28 @@ class Emitter {
 				default:
 					ENull;
 			});
-		for (i in 0...m.globals.length)
-			switch m.globals[i] {
-				case GFunction(_, nargs):
-					items[i] = call("func", [EStatic(cls, 'f$i'), EInt(nargs), moduleRef(), EInt(i)]);
-				default:
-			}
+		var bs = [
+			for (h in builtinHashes)
+				if (h == loaderHash)
+					ECallStatic(BOOT, "loader", [moduleRef()])
+				else if (h == exportsHash)
+					ECallStatic(BOOT, "exports", [moduleRef()])
+				else
+					ECallStatic(BUILTINS, "find", [EInt(h)])
+		];
 		return EBlock([
 			ESet(moduleRef(), ECallStatic(BOOT, "begin", [])),
 			call("registerFields", [EArrayDef([for (f in m.fields) EString(f)])]),
+			ESet(EStatic(cls, "B"), EArrayDef(bs)),
 			ESet(globals(), EArrayDef(items)),
 			ECallStatic(BOOT, "run", [moduleRef(), globals(), EStatic(cls, "body")])
 		]);
 	}
+
+	// -- Functions --
+
+	var blocks:Map<Int, Block>;
+	var order:Array<Block>;
 
 	function writeFunction(s:Scope) {
 		scope = s;
@@ -120,11 +279,30 @@ class Emitter {
 		acc = local("acc");
 		pc = local("pc", CppiaWriter.INT);
 		var pcs = s.pcs();
-		var hasTraps = false;
+		hasTraps = false;
 		for (p in pcs)
 			if (p < m.codeSize && m.op(p) == Trap)
 				hasTraps = true;
 		traps = hasTraps ? local("traps", CppiaWriter.ARRAY) : null;
+
+		buildBlocks(pcs);
+
+		// Blocks written inline that end up nested too deep become cases as well
+		var cases = [];
+		var done = new Map<Int, Bool>();
+		var more = true;
+		while (more) {
+			more = false;
+			for (b in order)
+				if (b.reached && !b.inlined && !done.exists(b.start)) {
+					done.set(b.start, true);
+					more = true;
+					var out = [];
+					chain(b, new State(slots.length), out, 0);
+					cases.push({value: b.start, body: EBlock(out)});
+				}
+		}
+		cases.sort((a, b) -> a.value - b.value);
 
 		var body:Array<E> = [EDecl(acc, ENull)];
 		for (i in nargs...slots.length)
@@ -133,7 +311,7 @@ class Emitter {
 		if (hasTraps)
 			body.push(EDecl(traps, EArrayDef([])));
 
-		var dispatch = EWhile(EBool(true), ESwitch(v(pc), blocks(pcs)));
+		var dispatch = EWhile(EBool(true), cases.length == 1 ? cases[0].body : switchOn(cases));
 		if (hasTraps) {
 			var ex = local("e");
 			var handler = EBlock([
@@ -143,206 +321,594 @@ class Emitter {
 				call("trapPop", [v(traps)]),
 				set(acc, call("trapped", [EVar(ex.id)]))
 			]);
-			dispatch = ETry(dispatch, ex, handler);
+			dispatch = EWhile(EBool(true), ETry(EWhile(EBool(true), switchOn(cases)), ex, handler));
 		}
-		body.push(EWhile(EBool(true), dispatch));
+		body.push(dispatch);
 		body.push(EReturn(ENull));
 
 		var args = [th, env].concat(slots.slice(0, nargs));
 		var pos = m.positions != null && s.entry < m.positions.length ? m.positions[s.entry] : null;
-		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body), pos == null ? '$name@' : frameFile(pos.file), pos == null ? s.entry : pos.line);
+		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body), fileId(pos), pos == null ? s.entry : pos.line);
 	}
 
-	// The instructions that start a basic block
-	function leaders(pcs:Array<Int>):Map<Int, Bool> {
-		var result = new Map<Int, Bool>();
-		result.set(scope.entry, true);
+	// The switch over the blocks; under the JIT, which tests cases one by one, a large
+	//  one becomes a tree of comparisons with small switches at its leaves
+	function switchOn(cases:Array<{value:Int, body:E}>):E {
+		if (!jit || cases.length <= JIT_SWITCH)
+			return ESwitch(v(pc), cases);
+		var half = cases.length >> 1;
+		return EIfElse(ELess(v(pc), EInt(cases[half].value)), switchOn(cases.slice(0, half)), switchOn(cases.slice(half)));
+	}
+
+	var lastFile:String = null;
+	var lastFileId = 0;
+
+	function fileId(pos:Null<Position>):Int {
+		var f = pos == null ? '$name@' : pos.file;
+		if (f != lastFile) {
+			lastFile = f;
+			lastFileId = w.stringId(pos == null ? f : frameFile(f));
+		}
+		return lastFileId;
+	}
+
+	function position(p:Int):Pos {
+		var pos = m.positions != null && p < m.positions.length ? m.positions[p] : null;
+		// Without debug info the code index stands in for the line
+		return new Pos(fileId(pos), pos == null ? p : pos.line);
+	}
+
+	// -- Blocks --
+
+	function buildBlocks(pcs:Array<Int>) {
+		var lead = new Map<Int, Bool>();
+		lead.set(scope.entry, true);
 		for (p in pcs) {
 			if (p >= m.codeSize) {
-				result.set(p, true);
+				lead.set(p, true);
 				continue;
 			}
 			switch m.op(p) {
-				case Jump:
-					result.set(m.target(p), true);
-					result.set(m.next(p), true);
-				case JumpIf | JumpIfNot | Trap:
-					result.set(m.target(p), true);
-					result.set(m.next(p), true);
+				case Jump | JumpIf | JumpIfNot | Trap:
+					lead.set(m.target(p), true);
+					lead.set(m.next(p), true);
 				case JumpTable:
-					var n = m.param(p);
-					for (k in 0...n + 1)
-						result.set(p + 2 + 2 * k, true);
+					for (k in 0...m.param(p) + 1)
+						lead.set(p + 2 + 2 * k, true);
 				case Ret | TailCall:
-					result.set(m.next(p), true);
+					lead.set(m.next(p), true);
 				default:
 			}
 		}
-		return result;
-	}
-
-	function blocks(pcs:Array<Int>):Array<{value:Int, body:E}> {
-		var lead = leaders(pcs);
 		var reached = new Map<Int, Bool>();
 		for (p in pcs)
 			reached.set(p, true);
-		var cases = [];
+
+		blocks = new Map();
+		order = [];
 		var i = 0;
 		while (i < pcs.length) {
-			var start = pcs[i];
-			var stmts:Array<E> = [];
-			var p = start;
+			var b = new Block(pcs[i]);
+			var p = b.start;
 			while (true) {
-				if (p >= m.codeSize) {
-					// The module body ends with neko's Last, returning the accumulator
-					stmts.push(EReturn(v(acc)));
+				b.code.push(p);
+				if (p >= m.codeSize)
 					break;
-				}
-				var ended = instruction(p, stmts);
-				var next = m.next(p);
-				if (m.op(p) == JumpTable)
-					next = p + 2 + 2 * m.param(p);
-				if (ended)
+				var op = m.op(p);
+				var next = op == JumpTable ? p + 2 + 2 * m.param(p) : m.next(p);
+				b.next = next;
+				if (op == Jump || op == Ret || op == TailCall || op == JumpTable || op == JumpIf || op == JumpIfNot || op == Trap)
 					break;
-				if (lead.exists(next) || !reached.exists(next)) {
-					stmts.push(set(pc, EInt(next)));
-					stmts.push(EContinue);
+				if (lead.exists(next) || !reached.exists(next))
 					break;
-				}
 				p = next;
 			}
-			cases.push({value: start, body: EBlock(stmts)});
-			// The next block starts at the next leader among the scope's instructions
+			blocks.set(b.start, b);
+			order.push(b);
 			i++;
 			while (i < pcs.length && !lead.exists(pcs[i]))
 				i++;
 		}
-		return cases;
+
+		// The edges between blocks; the entry, trap handlers and jump table cases are
+		//  reached through the switch
+		blocks.get(scope.entry).forced = true;
+		for (b in order) {
+			var p = b.code[b.code.length - 1];
+			b.succ = [];
+			if (p < m.codeSize)
+				switch m.op(p) {
+					case Jump:
+						b.succ.push(m.target(p));
+					case JumpIf | JumpIfNot:
+						b.succ.push(m.target(p));
+						b.succ.push(m.next(p));
+					case Trap:
+						blocks.get(m.target(p)).forced = true;
+						b.succ.push(m.next(p));
+					case JumpTable:
+						for (k in 0...m.param(p) + 1) {
+							var t = p + 2 + 2 * k;
+							blocks.get(t).forced = true;
+							b.succ.push(t);
+						}
+					case Ret | TailCall:
+					default:
+						b.succ.push(b.next);
+				}
+		}
+		// Predecessors among the blocks that run
+		var work = [for (b in order) if (b.forced) b];
+		for (b in work)
+			b.reached = true;
+		while (work.length > 0) {
+			var b = work.pop();
+			for (t in b.succ) {
+				var c = blocks.get(t);
+				c.preds++;
+				if (!c.reached) {
+					c.reached = true;
+					work.push(c);
+				}
+			}
+		}
+		for (b in order)
+			b.inlined = b.reached && !b.forced && b.preds == 1;
+
+		// Where the accumulator is read before it is written
+		for (b in order) {
+			for (p in b.code) {
+				if (readsAcc(p)) {
+					b.accIn = true;
+					break;
+				}
+				if (writesAcc(p)) {
+					b.writesAcc = true;
+					break;
+				}
+			}
+		}
+		var changed = true;
+		while (changed) {
+			changed = false;
+			for (b in order) {
+				if (b.accIn || b.writesAcc)
+					continue;
+				for (t in b.succ)
+					if (blocks.get(t).accIn) {
+						b.accIn = true;
+						changed = true;
+						break;
+					}
+			}
+		}
 	}
 
-	inline function slot(index:Int):E
-		return v(slots[index]);
+	// Whether the accumulator is read after each instruction of a block, before it is
+	//  written, by the block or one after it
+	function accLiveAfter(b:Block):Array<Bool> {
+		var out = false;
+		for (t in b.succ)
+			if (blocks.get(t).accIn)
+				out = true;
+		var live = [for (_ in b.code) false];
+		var k = b.code.length;
+		while (k-- > 0) {
+			live[k] = out;
+			var p = b.code[k];
+			if (writesAcc(p))
+				out = false;
+			if (readsAcc(p))
+				out = true;
+		}
+		return live;
+	}
 
-	// The values of the n slots below the top, deepest first
-	function top(depth:Int, n:Int):Array<E>
-		return [for (k in depth - n...depth) slot(k)];
+	function readsAcc(p:Int):Bool {
+		if (p >= m.codeSize)
+			return true;
+		return switch m.op(p) {
+			case AccNull | AccTrue | AccFalse | AccThis | AccInt | AccStack | AccStack0 | AccStack1 | AccGlobal | AccEnv | AccBuiltin | Pop | Loop |
+				Jump | Trap | EndTrap:
+				false;
+			default:
+				true;
+		}
+	}
+
+	function writesAcc(p:Int):Bool {
+		if (p >= m.codeSize)
+			return false;
+		return switch m.op(p) {
+			case SetStack | SetGlobal | SetEnv | SetField | SetThis | Push | Pop | Loop | Jump | JumpIf | JumpIfNot | Trap | EndTrap | Ret | TailCall |
+				JumpTable | SetArray | SetIndex:
+				false;
+			default:
+				true;
+		}
+	}
+
+	// -- Writing code --
+
+	// Writes block b and the blocks written inline after it, starting from state st
+	function chain(b:Block, st:State, out:Array<E>, nest:Int) {
+		var live = accLiveAfter(b);
+		for (k in 0...b.code.length) {
+			var p = b.code[k];
+			if (p >= m.codeSize) {
+				// The module body ends with neko's Last, returning the accumulator
+				var pos = position(p);
+				var e = consumeAcc(st, out, pos, false);
+				out.push(EPos(pos.file, pos.line, EReturn(e)));
+				return;
+			}
+			var op = m.op(p);
+			switch op {
+				case Jump:
+					goTo(m.target(p), st, out, nest);
+					return;
+				case JumpIf | JumpIfNot:
+					var pos = position(p);
+					var cond = condition(st, out, pos, op == JumpIf, live[k]);
+					var taken = [];
+					goTo(m.target(p), st.copy(), taken, nest + 1);
+					out.push(EPos(pos.file, pos.line, EIf(cond, EBlock(taken))));
+					goTo(m.next(p), st, out, nest);
+					return;
+				default:
+					if (instruction(p, st, out, live[k]))
+						return;
+			}
+		}
+		goTo(b.next, st, out, nest);
+	}
+
+	// Goes on to the block at t: inline when nothing else reaches it, else through
+	//  the switch with the state in locals
+	function goTo(t:Int, st:State, out:Array<E>, nest:Int) {
+		var b = blocks.get(t);
+		if (b.inlined && nest < MAX_NEST) {
+			chain(b, st, out, nest);
+			return;
+		}
+		b.inlined = false;
+		flush(st, out, scope.depth.get(t), b.accIn);
+		out.push(set(pc, EInt(t)));
+		out.push(EContinue);
+	}
+
+	// Puts the state in locals: the slots below depth, and the accumulator when it is read
+	function flush(st:State, out:Array<E>, depth:Int, accLive:Bool) {
+		for (k in 0...depth)
+			if (st.slots[k] != null)
+				materializeSlot(st, k, out);
+		if (accLive)
+			materializeAcc(st, out);
+		else
+			dropAcc(st, out);
+	}
+
+	// The condition of a conditional jump on the accumulator, which the jump leaves as it is
+	function condition(st:State, out:Array<E>, pos:Pos, ifTrue:Bool, live:Bool):E {
+		var a = st.acc;
+		var isBool = a != null && a.isBool;
+		var e = readAcc(st, out, pos, false, live);
+		if (isBool)
+			return ifTrue ? e : ENot(e);
+		return call(ifTrue ? "isTrue" : "isNotTrue", [e]);
+	}
+
+	// -- The state --
+	//
+	// A slot or the accumulator is pending when its value is an expression rather than
+	//  its local. While it is, nothing pending reads its local, so a pending value can
+	//  go into its local at any time without upsetting another. Effects stay in order:
+	//  only the accumulator holds one, which the next instruction takes or puts in a local
+
+	// Before local id changes or stops holding its slot's value: whatever pending reads it
+	//  goes into its own local
+	function release(st:State, id:Int, out:Array<E>, keepAcc = false) {
+		for (k in 0...st.slots.length) {
+			var s = st.slots[k];
+			if (s != null && s.kind == LOCAL && s.local == id)
+				materializeSlot(st, k, out);
+		}
+		var a = st.acc;
+		if (!keepAcc && a != null && (a.kind == LOCAL && a.local == id || a.kind == EFFECT && reads(a.e, id)))
+			materializeAcc(st, out);
+	}
+
+	static function reads(e:E, id:Int):Bool {
+		return switch e {
+			case EVar(i): i == id;
+			case ECallStatic(_, _, args) | EArrayDef(args) | EBlock(args):
+				for (a in args)
+					if (reads(a, id))
+						return true;
+				false;
+			case EArrayI(a, i): reads(a, id) || reads(i, id);
+			case ENot(x) | EIsNull(x) | ENotNull(x) | EPos(_, _, x): reads(x, id);
+			case ESet(l, r): reads(l, id) || reads(r, id);
+			case EIfElse(c, a, b): reads(c, id) || reads(a, id) || reads(b, id);
+			case ELess(a, b): reads(a, id) || reads(b, id);
+			default: false;
+		}
+	}
+
+	function materializeSlot(st:State, k:Int, out:Array<E>) {
+		var s = st.slots[k];
+		st.slots[k] = null;
+		out.push(ESet(v(slots[k]), s.e));
+	}
+
+	function materializeAcc(st:State, out:Array<E>) {
+		var a = st.acc;
+		if (a == null)
+			return;
+		st.acc = null;
+		if (a.kind == LOCAL && a.local == acc.id)
+			return;
+		out.push(EPos(a.file, a.line, set(acc, a.e)));
+	}
+
+	// The accumulator is about to be replaced: a pending effect still happens
+	function dropAcc(st:State, out:Array<E>) {
+		var a = st.acc;
+		st.acc = null;
+		if (a != null && a.kind == EFFECT && !a.droppable)
+			out.push(EPos(a.file, a.line, a.e));
+	}
+
+	// The accumulator's value for an instruction that reads it and then replaces it.
+	//  An effect pending in it goes into the instruction's own expression when they are
+	//  at the same line, or one of them cannot throw, so the statement's line is right
+	//  for whatever throws in it
+	function consumeAcc(st:State, out:Array<E>, pos:Pos, canThrow:Bool):E {
+		var a = st.acc;
+		if (a == null)
+			return v(acc);
+		if (a.kind == EFFECT) {
+			if (a.canThrow && canThrow && a.line != pos.line) {
+				materializeAcc(st, out);
+				return v(acc);
+			}
+			st.acc = null;
+			if (a.canThrow)
+				pos.takes(a);
+		}
+		return a.e;
+	}
+
+	// The accumulator's value for an instruction that reads it and leaves it: a pending
+	//  effect goes into the local when it is read again later
+	function readAcc(st:State, out:Array<E>, pos:Pos, canThrow:Bool, liveAfter:Bool):E {
+		var a = st.acc;
+		if (a == null)
+			return v(acc);
+		if (a.kind != EFFECT)
+			return a.e;
+		if (liveAfter) {
+			materializeAcc(st, out);
+			return v(acc);
+		}
+		return consumeAcc(st, out, pos, canThrow);
+	}
+
+	// Replaces the accumulator with p
+	function setAcc(st:State, out:Array<E>, p:Pending) {
+		dropAcc(st, out);
+		release(st, acc.id, out, true);
+		st.acc = p;
+	}
+
+	// The value of stack slot k
+	function slotValue(st:State, k:Int):E {
+		var s = st.slots[k];
+		return s == null ? v(slots[k]) : s.e;
+	}
+
+	function slotPending(st:State, k:Int):Pending {
+		var s = st.slots[k];
+		return s != null ? s : Pending.ofLocal(slots[k].id, v(slots[k]));
+	}
+
+	// The n slots below the top, deepest first
+	function top(st:State, depth:Int, n:Int):Array<E>
+		return [for (k in depth - n...depth) slotValue(st, k)];
+
+	function pop(st:State, from:Int, to:Int)
+		for (k in from...to)
+			st.slots[k] = null;
+
+	inline function effect(e:E, pos:Pos, canThrow = true, isBool = false):Pending
+		return Pending.ofEffect(e, pos.file, pos.line, canThrow || pos.throws, isBool);
+
+	// Puts the accumulator's value in slot k: kept pending when it is a constant or a
+	//  local, else written to the slot's local, which the accumulator then reads
+	function setSlot(st:State, k:Int, out:Array<E>, pos:Pos) {
+		var a = st.acc;
+		var id = slots[k].id;
+		if (a == null && !hasTraps)
+			a = Pending.ofLocal(acc.id, v(acc));
+		if (a != null && a.kind == LOCAL && a.local == id) {
+			st.slots[k] = null;
+			return;
+		}
+		if (a != null && a.kind != EFFECT && !hasTraps) {
+			release(st, id, out);
+			st.slots[k] = a;
+			return;
+		}
+		var e = consumeAcc(st, out, pos, false);
+		var wasEffect = st.acc == null && a != null && a.kind == EFFECT;
+		release(st, id, out, true);
+		st.slots[k] = null;
+		out.push(EPos(pos.file, pos.line, ESet(v(slots[k]), e)));
+		if (wasEffect)
+			st.acc = Pending.ofLocal(id, v(slots[k]));
+	}
+
+	// Writes local l, which is not a slot, with what pending reads it put in locals first
+	function writeLocal(st:State, l:Local, e:E, out:Array<E>, pos:Pos) {
+		release(st, l.id, out, true);
+		out.push(EPos(pos.file, pos.line, set(l, e)));
+	}
 
 	// Writes one instruction; true when it ends the block
-	function instruction(p:Int, out:Array<E>):Bool {
+	function instruction(p:Int, st:State, out:Array<E>, liveAfter:Bool):Bool {
 		var op = m.op(p);
 		var param = op.hasParam ? m.param(p) : 0;
 		var d = scope.depth.get(p);
-		var pos = m.positions != null && p < m.positions.length ? m.positions[p] : null;
-		// Without debug info the code index stands in for the line
-		var file = pos == null ? '$name@' : frameFile(pos.file);
-		var line = pos == null ? p : pos.line;
-		inline function emit(e:E)
-			out.push(EPos(file, line, e));
-		inline function toAcc(e:E)
-			emit(set(acc, e));
-		inline function binary(name:String)
-			toAcc(call(name, [slot(d - 1), v(acc)]));
+		var pos = position(p);
+		var inBody = scope.global < 0;
+		function binary(name:String, isBool = false, canThrow = true) {
+			var a = slotValue(st, d - 1);
+			var b = consumeAcc(st, out, pos, canThrow);
+			pop(st, d - 1, d);
+			setAcc(st, out, effect(call(name, [a, b]), pos, canThrow, isBool));
+		}
+		function unary(make:E->E, canThrow:Bool, isBool = false) {
+			var a = consumeAcc(st, out, pos, canThrow);
+			setAcc(st, out, effect(make(a), pos, canThrow, isBool));
+		}
 
 		switch op {
 			case AccNull:
-				toAcc(ENull);
+				setAcc(st, out, Pending.ofConst(ENull));
 			case AccTrue:
-				toAcc(EBool(true));
+				setAcc(st, out, Pending.ofConst(EBool(true), true));
 			case AccFalse:
-				toAcc(EBool(false));
+				setAcc(st, out, Pending.ofConst(EBool(false), true));
 			case AccThis:
-				toAcc(v(th));
+				setAcc(st, out, Pending.ofLocal(th.id, v(th)));
 			case AccInt:
-				toAcc(EInt(param));
+				setAcc(st, out, Pending.ofConst(EInt(param)));
 			case AccStack | AccStack0 | AccStack1:
-				toAcc(slot(d - 1 - m.slot(p)));
+				var s = slotPending(st, d - 1 - m.slot(p));
+				if (s.kind == LOCAL && s.local == acc.id) {
+					// The value is in the accumulator's local already
+					dropAcc(st, out);
+				} else
+					setAcc(st, out, s);
 			case AccGlobal:
-				toAcc(EArrayI(globals(), EInt(param)));
+				var e = EArrayI(globals(), EInt(param));
+				if (constantGlobal(param, inBody)) {
+					var c = Pending.ofConst(e);
+					c.fn = heldFunction[param];
+					setAcc(st, out, c);
+				} else {
+					var r = effect(e, pos, false);
+					r.droppable = true;
+					setAcc(st, out, r);
+				}
 			case AccEnv:
-				toAcc(EArrayI(v(env), EInt(param)));
+				setAcc(st, out, effect(EArrayI(v(env), EInt(param)), pos));
 			case AccField:
-				toAcc(call("field", [v(acc), EInt(param)]));
+				unary(a -> call("field", [a, EInt(param)]), true);
 			case AccArray:
 				binary("aget");
 			case AccIndex | AccIndex0 | AccIndex1:
-				toAcc(call("aget", [v(acc), EInt(m.slot(p))]));
+				unary(a -> call("aget", [a, EInt(m.slot(p))]), true);
 			case AccBuiltin:
-				if (param == loaderHash)
-					toAcc(ECallStatic(BOOT, "loader", [moduleRef()]));
-				else if (param == exportsHash)
-					toAcc(ECallStatic(BOOT, "exports", [moduleRef()]));
+				if (param == loaderHash || param == exportsHash || builtinExists == null || builtinExists(param))
+					setAcc(st, out, Pending.ofConst(builtin(param)));
 				else
-					toAcc(ECallStatic(BUILTINS, "get", [EInt(param)]));
+					setAcc(st, out, effect(ECallStatic(BUILTINS, "get", [EInt(param)]), pos));
 			case SetStack:
-				emit(ESet(slot(d - 1 - param), v(acc)));
-			case SetGlobal:
-				emit(ESet(EArrayI(globals(), EInt(param)), v(acc)));
-			case SetEnv:
-				emit(ESet(EArrayI(v(env), EInt(param)), v(acc)));
-			case SetField:
-				emit(call("setField", [slot(d - 1), EInt(param), v(acc)]));
-			case SetArray:
-				toAcc(call("aset", [slot(d - 1), slot(d - 2), v(acc)]));
-			case SetIndex:
-				toAcc(call("aset", [slot(d - 1), EInt(param), v(acc)]));
-			case SetThis:
-				emit(set(th, v(acc)));
+				setSlot(st, d - 1 - param, out, pos);
 			case Push:
-				emit(ESet(slot(d), v(acc)));
-			case Pop | Loop:
+				setSlot(st, d, out, pos);
+			case SetGlobal:
+				var e = readAcc(st, out, pos, false, liveAfter);
+				out.push(EPos(pos.file, pos.line, ESet(EArrayI(globals(), EInt(param)), e)));
+			case SetEnv:
+				var e = readAcc(st, out, pos, false, liveAfter);
+				out.push(EPos(pos.file, pos.line, ESet(EArrayI(v(env), EInt(param)), e)));
+			case SetField:
+				var o = slotValue(st, d - 1);
+				var e = readAcc(st, out, pos, true, liveAfter);
+				out.push(EPos(pos.file, pos.line, call("setField", [o, EInt(param), e])));
+			case SetArray:
+				var a = slotValue(st, d - 1), i = slotValue(st, d - 2);
+				var e = readAcc(st, out, pos, true, liveAfter);
+				out.push(EPos(pos.file, pos.line, call("aset", [a, i, e])));
+			case SetIndex:
+				var a = slotValue(st, d - 1);
+				var e = readAcc(st, out, pos, true, liveAfter);
+				out.push(EPos(pos.file, pos.line, call("aset", [a, EInt(param), e])));
+			case SetThis:
+				var a = st.acc;
+				if (a != null && a.kind == LOCAL && a.local == th.id)
+					return false;
+				var wasEffect = a != null && a.kind == EFFECT;
+				var e = readAcc(st, out, pos, false, false);
+				writeLocal(st, th, e, out, pos);
+				if (wasEffect)
+					st.acc = Pending.ofLocal(th.id, v(th));
+			case Pop:
+				pop(st, d - param, d);
+			case Loop:
 			case Call:
-				toAcc(call('call$param', [v(acc), v(th)].concat(top(d, param))));
+				var args = top(st, d, param);
+				var f = st.acc;
+				var e:E;
+				if (f != null && f.kind == CONST && f.fn >= 0 && functionArgs(f.fn) == param) {
+					st.acc = null;
+					e = directCall(f.fn, args);
+				} else
+					e = call('call$param', [consumeAcc(st, out, pos, true), v(th)].concat(args));
+				pop(st, d - param, d);
+				setAcc(st, out, effect(e, pos));
 			case ObjCall:
-				toAcc(call('call$param', [v(acc), slot(d - 1)].concat(top(d - 1, param))));
+				var o = slotValue(st, d - 1);
+				var args = top(st, d - 1, param);
+				var f = consumeAcc(st, out, pos, true);
+				pop(st, d - 1 - param, d);
+				setAcc(st, out, effect(call('call$param', [f, o].concat(args)), pos));
 			case TailCall:
-				var n = param & 7;
-				// Calling itself, the function loops with the new arguments, as neko
-				//  reuses the frame; the arguments sit above the slots they replace
-				if (scope.global >= 0 && n == scope.nargs) {
-					var rebind = [set(env, call("envOf", [v(acc)]))];
-					for (i in 0...n)
-						rebind.push(ESet(slot(i), slot(d - n + i)));
-					rebind.push(set(pc, EInt(scope.entry)));
-					rebind.push(EContinue);
-					emit(EIf(call("isSelf", [v(acc), moduleRef(), EInt(scope.global)]), EBlock(rebind)));
-				}
-				if (n <= 3)
-					emit(EReturn(call('tail$n', [v(acc), v(th)].concat(top(d, n)))));
-				else
-					emit(EReturn(call("tailCall", [v(acc), v(th), EArrayDef(top(d, n))])));
+				tailCall(param & 7, d, st, out, pos);
 				return true;
 			case Ret:
-				emit(EReturn(v(acc)));
+				var e = consumeAcc(st, out, pos, false);
+				out.push(EPos(pos.file, pos.line, EReturn(e)));
 				return true;
-			case Jump:
-				emit(set(pc, EInt(m.target(p))));
-				emit(EContinue);
-				return true;
-			case JumpIf:
-				emit(EIf(call("isTrue", [v(acc)]), EBlock([set(pc, EInt(m.target(p))), EContinue])));
-			case JumpIfNot:
-				emit(EIf(call("isNotTrue", [v(acc)]), EBlock([set(pc, EInt(m.target(p))), EContinue])));
 			case Trap:
-				emit(call("trapPush", [v(traps), EInt(m.target(p)), v(th)]));
-			case EndTrap:
-				emit(call("trapPop", [v(traps)]));
-			case MakeEnv:
-				toAcc(call("makeEnv", [v(acc), EArrayDef(top(d, param))]));
-			case MakeArray:
-				var items = top(d, param);
-				if (m.version >= 2)
-					items.push(v(acc));
+				// An effect pending happens before the trap is set
+				if (liveAfter)
+					materializeAcc(st, out);
 				else
-					items.unshift(v(acc));
-				toAcc(EArrayDef(items));
+					dropAcc(st, out);
+				out.push(EPos(pos.file, pos.line, call("trapPush", [v(traps), EInt(m.target(p)), v(th)])));
+			case EndTrap:
+				if (liveAfter)
+					materializeAcc(st, out);
+				else
+					dropAcc(st, out);
+				out.push(EPos(pos.file, pos.line, call("trapPop", [v(traps)])));
+			case MakeEnv:
+				var items = top(st, d, param);
+				var f = consumeAcc(st, out, pos, true);
+				pop(st, d - param, d);
+				setAcc(st, out, effect(call("makeEnv", [f, EArrayDef(items)]), pos));
+			case MakeArray:
+				var items = top(st, d, param);
+				var a = consumeAcc(st, out, pos, false);
+				if (m.version >= 2)
+					items.push(a);
+				else
+					items.unshift(a);
+				pop(st, d - param, d);
+				var r = effect(EArrayDef(items), pos, false);
+				r.droppable = !r.canThrow;
+				setAcc(st, out, r);
 			case Bool:
-				toAcc(call("toBool", [v(acc)]));
+				unary(a -> call("toBool", [a]), false, true);
 			case Not:
-				toAcc(call("not", [v(acc)]));
+				unary(a -> call("not", [a]), false, true);
 			case IsNull:
-				toAcc(call("isNull", [v(acc)]));
+				unary(a -> EIsNull(a), false, true);
 			case IsNotNull:
-				toAcc(call("isNotNull", [v(acc)]));
+				unary(a -> ENotNull(a), false, true);
 			case Add:
 				binary("add");
 			case Sub:
@@ -366,36 +932,195 @@ class Emitter {
 			case Xor:
 				binary("xor");
 			case Eq:
-				binary("eq");
+				binary("eq", true);
 			case Neq:
-				binary("neq");
+				binary("neq", true);
 			case Gt:
-				binary("gt");
+				binary("gt", true);
 			case Gte:
-				binary("gte");
+				binary("gte", true);
 			case Lt:
-				binary("lt");
+				binary("lt", true);
 			case Lte:
-				binary("lte");
+				binary("lte", true);
 			case TypeOf:
-				toAcc(call("typeOf", [v(acc)]));
+				unary(a -> call("typeOf", [a]), false);
 			case Compare:
 				binary("compareOp");
 			case PhysCompare:
-				binary("physCompare");
+				binary("physCompare", false, false);
 			case Hash:
-				toAcc(call("hash", [v(acc)]));
+				unary(a -> call("hash", [a]), true);
 			case New:
-				toAcc(call("newObject", [v(acc)]));
+				unary(a -> call("newObject", [a]), true);
 			case JumpTable:
-				emit(set(pc, call("tableTarget", [v(acc), EInt(param), EInt(p)])));
-				emit(EContinue);
+				// Each case is a Jump of its own in the switch, as is the default
+				for (k in 0...st.slots.length)
+					if (st.slots[k] != null)
+						materializeSlot(st, k, out);
+				materializeAcc(st, out);
+				out.push(EPos(pos.file, pos.line, set(pc, call("tableTarget", [v(acc), EInt(param), EInt(p)]))));
+				out.push(EContinue);
 				return true;
 			case Apply:
-				toAcc(call("apply", [v(acc), v(th), EArrayDef(top(d, param))]));
+				var args = top(st, d, param);
+				var f = consumeAcc(st, out, pos, true);
+				pop(st, d - param, d);
+				setAcc(st, out, effect(call("apply", [f, v(th), EArrayDef(args)]), pos));
+			case Jump | JumpIf | JumpIfNot:
+				throw 'unexpected ${op.name} at $p';
 			case MakeArray2 | AccInt32 | Last:
 				throw 'unexpected ${op.name} at $p';
 		}
 		return false;
 	}
+
+	// A call of the module's function in global f, straight to its static function. It
+	//  is the function value with no environment, as AccGlobal gives it
+	function directCall(f:Int, args:Array<E>):E {
+		var e = ECallStatic(cls, 'f$f', [v(th), ENull].concat(args));
+		return mayTail.exists(f) ? call("finish", [e]) : e;
+	}
+
+	function tailCall(n:Int, d:Int, st:State, out:Array<E>, pos:Pos) {
+		var self = scope.global >= 0 && n == scope.nargs;
+		var f = st.acc;
+		var known = self && f != null && f.kind == CONST && f.fn == scope.global;
+		if (self && !known && f != null && f.kind == EFFECT)
+			materializeAcc(st, out);
+		f = st.acc;
+		var fe = f == null ? v(acc) : f.e;
+		if (self) {
+			// Calling itself, the function loops with the new arguments, as neko reuses
+			//  the frame; the arguments sit above the slots they replace
+			var loop = [];
+			var ls = st.copy();
+			writeLocal(ls, env, known ? ENull : call("envOf", [fe]), loop, pos);
+			for (i in 0...n) {
+				var id = slots[i].id;
+				release(ls, id, loop);
+				var value = slotPending(ls, d - n + i);
+				ls.slots[i] = null;
+				if (!(value.kind == LOCAL && value.local == id))
+					loop.push(ESet(v(slots[i]), value.e));
+			}
+			flush(ls, loop, n, blocks.get(scope.entry).accIn);
+			loop.push(set(pc, EInt(scope.entry)));
+			loop.push(EContinue);
+			if (known) {
+				out.push(EPos(pos.file, pos.line, EBlock(loop)));
+				return;
+			}
+			out.push(EPos(pos.file, pos.line, EIf(call("isSelf", [fe, moduleRef(), EInt(scope.global)]), EBlock(loop))));
+		}
+		var args = top(st, d, n);
+		var e = consumeAcc(st, out, pos, true);
+		if (n <= 3)
+			out.push(EPos(pos.file, pos.line, EReturn(call('tail$n', [e, v(th)].concat(args)))));
+		else
+			out.push(EPos(pos.file, pos.line, EReturn(call("tailCall", [e, v(th), EArrayDef(args)]))));
+	}
 }
+
+// Where an instruction is, and whether an effect it takes in can throw there
+class Pos {
+	public var file:Int;
+	public var line:Int;
+	public var throws = false;
+
+	public function new(file:Int, line:Int) {
+		this.file = file;
+		this.line = line;
+	}
+
+	// The instruction's expression takes in pending p, which can throw: the statement
+	//  it ends up in is at p's line
+	public function takes(p:Pending) {
+		file = p.file;
+		line = p.line;
+		throws = true;
+	}
+}
+
+// A run of instructions with one way in, and the blocks it goes on to
+class Block {
+	public var start:Int;
+	public var code:Array<Int> = [];
+	// Where the block runs on to when it does not end in a jump or return
+	public var next:Int = -1;
+	public var succ:Array<Int>;
+	public var preds = 0;
+	public var reached = false;
+	// Reached through the switch: the entry, trap handlers and jump table cases
+	public var forced = false;
+	// Written where its one predecessor goes to it
+	public var inlined = false;
+	public var accIn = false;
+	public var writesAcc = false;
+
+	public function new(start:Int)
+		this.start = start;
+}
+
+// A value not yet in a local: a constant, a local's value, or the result of an
+//  instruction, worked out where it is used
+class Pending {
+	public var kind:Int;
+	public var e:E;
+	public var local:Int = -1;
+	public var file:Int = 0;
+	public var line:Int = 0;
+	public var canThrow = false;
+	// A value the runtime gives as a Bool, which a conditional jump tests directly
+	public var isBool = false;
+	// An effect that can be left out when nothing reads its value
+	public var droppable = false;
+	// For a constant: the module function it is, when it is a function global's value
+	public var fn = -1;
+
+	function new(kind:Int, e:E) {
+		this.kind = kind;
+		this.e = e;
+	}
+
+	public static function ofConst(e:E, isBool = false):Pending {
+		var p = new Pending(CONST, e);
+		p.isBool = isBool;
+		return p;
+	}
+
+	public static function ofLocal(id:Int, e:E):Pending {
+		var p = new Pending(LOCAL, e);
+		p.local = id;
+		return p;
+	}
+
+	public static function ofEffect(e:E, file:Int, line:Int, canThrow:Bool, isBool:Bool):Pending {
+		var p = new Pending(EFFECT, e);
+		p.file = file;
+		p.line = line;
+		p.canThrow = canThrow;
+		p.isBool = isBool;
+		return p;
+	}
+}
+
+// What the slots and the accumulator hold where their locals do not
+class State {
+	public var slots:Array<Pending>;
+	public var acc:Pending = null;
+
+	public function new(n:Int)
+		slots = [for (_ in 0...n) null];
+
+	public function copy():State {
+		var s = new State(0);
+		s.slots = slots.copy();
+		s.acc = acc;
+		return s;
+	}
+}
+
+inline var CONST = 0;
+inline var LOCAL = 1;
+inline var EFFECT = 2;

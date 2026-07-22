@@ -19,7 +19,8 @@ class Main {
 
 	static function main() {
 		var args = Sys.args();
-		if (args.remove("-jit"))
+		jit = args.remove("-jit");
+		if (jit)
 			cpp.cppia.Host.enableJit(true);
 		var i = args.indexOf("--emit");
 		if (i >= 0) {
@@ -44,6 +45,7 @@ class Main {
 		// Filled before any neko thread can look them up
 		nekomata.rt.NekoBuiltins.init();
 		nekomata.rt.Primitives.init();
+		Emitter.builtinExists = h -> nekomata.rt.NekoBuiltins.find(h) != null;
 		var loader = NekoLoader.create(args);
 		NekoLoader.loadModule = loadModuleFile;
 		try {
@@ -55,30 +57,31 @@ class Main {
 		}
 	}
 
-	// Translates a module to cppia and runs it, returning its exports
 	// NEKOMATA_TIME=1 reports how long each module takes to read, translate and load
 	static var timing = Sys.getEnv("NEKOMATA_TIME") == "1";
+	static var jit = false;
 
+	// Translates a module to cppia and runs it, returning its exports
 	static function load(name:String, bytes:haxe.io.Bytes, loader:NObject):NObject {
 		var t0 = haxe.Timer.stamp();
 		var m = Reader.read(bytes);
 		var t1 = haxe.Timer.stamp();
-		var text = Emitter.emit(m, 'NekoModule${moduleCount++}', name);
+		var cppia = Emitter.emit(m, 'NekoModule${moduleCount++}', name, jit);
 		var t2 = haxe.Timer.stamp();
 		if (emitTo != null) {
-			sys.io.File.saveContent(emitTo, text);
+			sys.io.File.saveBytes(emitTo, cppia);
 			emitTo = null;
 		}
 		var nm = new NModule(name, loader);
 		Boot.pending = nm;
-		var module = cpp.cppia.Module.fromString(text);
+		var module = cpp.cppia.Module.fromData(cppia.getData());
 		var t3 = haxe.Timer.stamp();
 		module.boot();
 		var t4 = haxe.Timer.stamp();
 		if (timing) {
 			inline function ms(a:Float, b:Float)
 				return Std.string(Math.round((b - a) * 1000));
-			Sys.stderr().writeString('[nekomata] $name: read ${ms(t0, t1)} ms, translate ${ms(t1, t2)} ms (${text.length} bytes), parse ${ms(t2, t3)} ms, link ${ms(t3, t4)} ms\n');
+			Sys.stderr().writeString('[nekomata] $name: read ${ms(t0, t1)} ms, translate ${ms(t1, t2)} ms (${cppia.length} bytes), load ${ms(t2, t3)} ms, boot ${ms(t3, t4)} ms\n');
 		}
 		module.run();
 		return nm.exports;

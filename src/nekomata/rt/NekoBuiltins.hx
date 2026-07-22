@@ -17,6 +17,13 @@ class NekoBuiltins {
 		return f;
 	}
 
+	// The builtin, or null when there is none, for a module to look up once
+	public static function find(h:Int):Dynamic {
+		if (table == null)
+			init();
+		return table.get(h);
+	}
+
 	static function add(name:String, nargs:Int, fn:Dynamic)
 		table.set(nekomata.neko.Hash.field(name), new NFunction(fn, nargs, Primitive, null, null, name));
 
