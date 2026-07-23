@@ -40,6 +40,7 @@ typedef Local = {
 
 // Writes the text form of cppia (CPPIA magic), as Haxe's gencpp script_writer does
 //  with -debug, for the host's loader. The text goes straight into bytes
+@:build(nekomata.build.NoFrames.build())
 class CppiaWriter {
 	public static inline var DYNAMIC = "Dynamic";
 	public static inline var ARRAY = "Array.Any";
@@ -311,6 +312,7 @@ class CppiaWriter {
 }
 
 // A growable run of bytes that ints and ASCII text are written into
+@:build(nekomata.build.NoFrames.build())
 class Out {
 	public var buf:Bytes;
 	public var length = 0;
@@ -331,9 +333,18 @@ class Out {
 		buf = b;
 	}
 
+	// Sets a byte the buffer has room for
+	inline function put(i:Int, c:Int) {
+		#if cpp
+		cpp.NativeArray.unsafeSet(buf.getData(), i, c);
+		#else
+		buf.set(i, c);
+		#end
+	}
+
 	public inline function byte(c:Int) {
 		need(1);
-		buf.set(length++, c);
+		put(length++, c);
 	}
 
 	// Text the writer knows is ASCII
@@ -341,7 +352,7 @@ class Out {
 		var n = s.length;
 		need(n);
 		for (i in 0...n)
-			buf.set(length + i, StringTools.fastCodeAt(s, i));
+			put(length + i, StringTools.fastCodeAt(s, i));
 		length += n;
 	}
 
@@ -358,11 +369,11 @@ class Out {
 				ascii("-2147483648");
 				return;
 			}
-			buf.set(length++, "-".code);
+			put(length++, "-".code);
 			v = -v;
 		}
 		if (v < 10) {
-			buf.set(length++, "0".code + v);
+			put(length++, "0".code + v);
 			return;
 		}
 		var digits = 0, t = v;
@@ -374,7 +385,7 @@ class Out {
 		length = p;
 		while (v > 0) {
 			var q = div10(v);
-			buf.set(--p, "0".code + (v - q * 10));
+			put(--p, "0".code + (v - q * 10));
 			v = q;
 		}
 	}

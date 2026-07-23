@@ -17,6 +17,7 @@ typedef Position = {
 	var line:Int;
 }
 
+@:build(nekomata.build.NoFrames.build())
 class Module {
 	public var globals:Array<Global> = [];
 	// Names the module declares for field hashes, as neko's m->fields

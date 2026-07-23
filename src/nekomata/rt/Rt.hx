@@ -48,8 +48,163 @@ class Rt {
 	static inline var VT_STRING = 3;
 	static inline var VT_ARRAY = 5;
 
-	static inline function vt(v:Dynamic):Int
-		return v == null ? 0 : untyped v.__GetType();
+
+	// -- Entry points --
+	//
+	// cppia links a call of a host function by looking for its name in the class's
+	//  functions one after another, in the order they are declared, so the ones
+	//  translated code calls most come first
+
+	public static function field(o:Dynamic, h:Int):Dynamic {
+		if (!isObject(o))
+			return invalidFieldAccess(h);
+		var obj = asObject(o);
+		var v = obj.find(h);
+		if (v == null) {
+			var r = resolver.value;
+			if (r != null && !obj.has(h))
+				return call2(r, null, o, h);
+		}
+		return v;
+	}
+
+	// ObjCall of a field, o.f(args): the field as AccField reads it, called on o
+	public static function method1(o:Dynamic, h:Int, a:Dynamic):Dynamic
+		return finish(enter1(field(o, h), o, a));
+
+	public static function setField(o:Dynamic, h:Int, v:Dynamic):Void {
+		if (!isObject(o))
+			invalidFieldAccess(h);
+		asObject(o).fields.set(h, v);
+	}
+
+	public static function method2(o:Dynamic, h:Int, a:Dynamic, b:Dynamic):Dynamic
+		return finish(enter2(field(o, h), o, a, b));
+
+	public static function method0(o:Dynamic, h:Int):Dynamic
+		return finish(enter0(field(o, h), o));
+
+	public static function method3(o:Dynamic, h:Int, a:Dynamic, b:Dynamic, c:Dynamic):Dynamic
+		return finish(enter3(field(o, h), o, a, b, c));
+
+	public static function newObject(proto:Dynamic):NObject {
+		if (proto == null)
+			return new NObject();
+		if (!isObject(proto))
+			error("$new");
+		return asObject(proto).copy();
+	}
+
+	public static function call1(f:Dynamic, th:Dynamic, a:Dynamic):Dynamic
+		return finish(enter1(f, th, a));
+
+	public static function call2(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic):Dynamic
+		return finish(enter2(f, th, a, b));
+
+	public static function call0(f:Dynamic, th:Dynamic):Dynamic
+		return finish(enter0(f, th));
+
+	public static function call3(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic, c:Dynamic):Dynamic
+		return finish(enter3(f, th, a, b, c));
+
+	// A module function value; env is filled in by MakeEnv
+	public static function func(fn:Dynamic, nargs:Int, module:NModule, global:Int):NFunction
+		return new NFunction(fn, nargs, Bytecode, null, module, "", global);
+
+	// String globals, from hex so any bytes survive the cppia string table
+	public static function stringOf(hex:String):NString
+		return new NString(Bytes.ofHex(hex));
+
+	// Float globals, from their text in the module
+	public static function floatOf(text:String):NFloat
+		return new NFloat(Std.parseFloat(text));
+
+	public static function aget(a:Dynamic, i:Dynamic):Dynamic {
+		if (vt(a) == VT_ARRAY && isInt(i)) {
+			var arr:Array<Dynamic> = a;
+			var k:Int = i;
+			return k < 0 || k >= arr.length ? null : arr[k];
+		}
+		if (isObject(a)) {
+			var r:Dynamic = objectOp(a, i, H_GET);
+			if (!missing(r))
+				return r;
+			return error("Unsupported operation");
+		}
+		return error("Invalid array access");
+	}
+
+	// Returns the value the instruction leaves in the accumulator
+	public static function add(a:Dynamic, b:Dynamic):Dynamic {
+		var ta = typeOf(a), tb = typeOf(b);
+		if (ta == TINT && tb == TINT)
+			return (a : Int) + (b : Int);
+		if (numeric(ta) && numeric(tb))
+			return new NFloat(num(a) + num(b));
+		var r:Dynamic = objectOp(a, b, H_ADD);
+		if (!missing(r))
+			return r;
+		r = objectOp(b, a, H_RADD);
+		if (!missing(r))
+			return r;
+		if (ta == TSTRING || tb == TSTRING) {
+			var buf = new BytesBuffer();
+			appendValue(buf, a);
+			appendValue(buf, b);
+			return new NString(buf.getBytes());
+		}
+		return opError("+");
+	}
+	public static function eq(a:Dynamic, b:Dynamic):Bool {
+		if (isInt(a) && isInt(b))
+			return (a : Int) == (b : Int);
+		return compare(a, b) == 0;
+	}
+
+	public static function makeEnv(f:Dynamic, env:Array<Dynamic>):NFunction {
+		if (!isFunction(f) || asFunction(f).kind != Bytecode)
+			error("Invalid environment");
+		var fn = asFunction(f);
+		return new NFunction(fn.fn, fn.nargs, Bytecode, env, fn.module, "", fn.global);
+	}
+
+	// Whether a tail call calls the function it is in, so it can loop instead
+	public static inline function isNotTrue(v:Dynamic):Bool
+		return !isTrue(v);
+
+	public static inline function isTrue(v:Dynamic):Bool
+		return vt(v) == VT_BOOL && (v : Bool);
+
+	public static function lt(a:Dynamic, b:Dynamic):Bool {
+		if (isInt(a) && isInt(b))
+			return (a : Int) < (b : Int);
+		var c = compare(a, b);
+		return c < 0 && c != INVALID;
+	}
+
+	public static function sub(a:Dynamic, b:Dynamic):Dynamic {
+		var ta = typeOf(a), tb = typeOf(b);
+		if (ta == TINT && tb == TINT)
+			return (a : Int) - (b : Int);
+		if (numeric(ta) && numeric(tb))
+			return new NFloat(num(a) - num(b));
+		return objectOps(a, b, H_SUB, H_RSUB, "-");
+	}
+
+	public static function neq(a:Dynamic, b:Dynamic):Bool {
+		if (isInt(a) && isInt(b))
+			return (a : Int) != (b : Int);
+		return compare(a, b) != 0;
+	}
+
+	public static function method4(o:Dynamic, h:Int, a:Dynamic, b:Dynamic, c:Dynamic, d:Dynamic):Dynamic
+		return callArgs(field(o, h), o, [a, b, c, d]);
+
+	public static function method5(o:Dynamic, h:Int, a:Dynamic, b:Dynamic, c:Dynamic, d:Dynamic, e:Dynamic):Dynamic
+		return callArgs(field(o, h), o, [a, b, c, d, e]);
+
+	public static function call4(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic, c:Dynamic, d:Dynamic):Dynamic
+		return callArgs(f, th, [a, b, c, d]);
 
 	public static function typeOf(v:Dynamic):Int {
 		switch vt(v) {
@@ -71,6 +226,11 @@ class Rt {
 	}
 
 	// Whether v is an instance of one of the runtime's value classes, in one virtual call
+	// -- Values --
+
+	static inline function vt(v:Dynamic):Int
+		return v == null ? 0 : untyped v.__GetType();
+
 	//  where Std.isOfType makes several, and the value as that class without a second check
 	public static inline function isFunction(v:Dynamic):Bool
 		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::NFunction_obj::_hx_ClassId); }({0}.mPtr)", v);
@@ -125,14 +285,6 @@ class Rt {
 
 	public static inline function float(f:Float):NFloat
 		return new NFloat(f);
-
-	// Float globals, from their text in the module
-	public static function floatOf(text:String):NFloat
-		return new NFloat(Std.parseFloat(text));
-
-	// String globals, from hex so any bytes survive the cppia string table
-	public static function stringOf(hex:String):NString
-		return new NString(Bytes.ofHex(hex));
 
 	public static inline function str(s:String):NString
 		return NString.of(s);
@@ -194,9 +346,6 @@ class Rt {
 
 	// -- Truth --
 
-	public static inline function isTrue(v:Dynamic):Bool
-		return vt(v) == VT_BOOL && (v : Bool);
-
 	// The Bool opcode: false for false, null and 0
 	public static function toBool(v:Dynamic):Bool {
 		return switch vt(v) {
@@ -206,9 +355,6 @@ class Rt {
 			default: true;
 		}
 	}
-
-	public static inline function isNotTrue(v:Dynamic):Bool
-		return !isTrue(v);
 
 	public static inline function not(v:Dynamic):Bool
 		return !toBool(v);
@@ -255,26 +401,6 @@ class Rt {
 	static inline function numeric(t:Int):Bool
 		return t == TINT || t == TFLOAT;
 
-	public static function add(a:Dynamic, b:Dynamic):Dynamic {
-		var ta = typeOf(a), tb = typeOf(b);
-		if (ta == TINT && tb == TINT)
-			return (a : Int) + (b : Int);
-		if (numeric(ta) && numeric(tb))
-			return new NFloat(num(a) + num(b));
-		var r:Dynamic = objectOp(a, b, H_ADD);
-		if (!missing(r))
-			return r;
-		r = objectOp(b, a, H_RADD);
-		if (!missing(r))
-			return r;
-		if (ta == TSTRING || tb == TSTRING) {
-			var buf = new BytesBuffer();
-			appendValue(buf, a);
-			appendValue(buf, b);
-			return new NString(buf.getBytes());
-		}
-		return opError("+");
-	}
 
 	// The operator fields of objects, for an operation on numbers whose operands are not
 	//  both numbers
@@ -286,15 +412,6 @@ class Rt {
 		if (!missing(r))
 			return r;
 		return opError(name);
-	}
-
-	public static function sub(a:Dynamic, b:Dynamic):Dynamic {
-		var ta = typeOf(a), tb = typeOf(b);
-		if (ta == TINT && tb == TINT)
-			return (a : Int) - (b : Int);
-		if (numeric(ta) && numeric(tb))
-			return new NFloat(num(a) - num(b));
-		return objectOps(a, b, H_SUB, H_RSUB, "-");
 	}
 
 	public static function mult(a:Dynamic, b:Dynamic):Dynamic {
@@ -401,25 +518,6 @@ class Rt {
 		return untyped __cpp__("{0}.mPtr == {1}.mPtr", a, b);
 	}
 
-	public static function eq(a:Dynamic, b:Dynamic):Bool {
-		if (isInt(a) && isInt(b))
-			return (a : Int) == (b : Int);
-		return compare(a, b) == 0;
-	}
-
-	public static function neq(a:Dynamic, b:Dynamic):Bool {
-		if (isInt(a) && isInt(b))
-			return (a : Int) != (b : Int);
-		return compare(a, b) != 0;
-	}
-
-	public static function lt(a:Dynamic, b:Dynamic):Bool {
-		if (isInt(a) && isInt(b))
-			return (a : Int) < (b : Int);
-		var c = compare(a, b);
-		return c < 0 && c != INVALID;
-	}
-
 	public static function lte(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
 			return (a : Int) <= (b : Int);
@@ -463,14 +561,6 @@ class Rt {
 
 	// -- Objects, fields and arrays --
 
-	public static function newObject(proto:Dynamic):NObject {
-		if (proto == null)
-			return new NObject();
-		if (!isObject(proto))
-			error("$new");
-		return asObject(proto).copy();
-	}
-
 	// What $setresolver set, per thread as neko's is per VM: called for a field an
 	//  object and its prototypes lack
 	public static var resolver = new sys.thread.Tls<Dynamic>();
@@ -481,41 +571,6 @@ class Rt {
 		return error(n == null ? "Invalid field access" : "Invalid field access : " + n);
 	}
 
-	public static function field(o:Dynamic, h:Int):Dynamic {
-		if (!isObject(o))
-			return invalidFieldAccess(h);
-		var obj = asObject(o);
-		var v = obj.find(h);
-		if (v == null) {
-			var r = resolver.value;
-			if (r != null && !obj.has(h))
-				return call2(r, null, o, h);
-		}
-		return v;
-	}
-
-	public static function setField(o:Dynamic, h:Int, v:Dynamic):Void {
-		if (!isObject(o))
-			invalidFieldAccess(h);
-		asObject(o).fields.set(h, v);
-	}
-
-	public static function aget(a:Dynamic, i:Dynamic):Dynamic {
-		if (vt(a) == VT_ARRAY && isInt(i)) {
-			var arr:Array<Dynamic> = a;
-			var k:Int = i;
-			return k < 0 || k >= arr.length ? null : arr[k];
-		}
-		if (isObject(a)) {
-			var r:Dynamic = objectOp(a, i, H_GET);
-			if (!missing(r))
-				return r;
-			return error("Unsupported operation");
-		}
-		return error("Invalid array access");
-	}
-
-	// Returns the value the instruction leaves in the accumulator
 	public static function aset(a:Dynamic, i:Dynamic, v:Dynamic):Dynamic {
 		if (vt(a) == VT_ARRAY && isInt(i)) {
 			var arr:Array<Dynamic> = a;
@@ -551,18 +606,6 @@ class Rt {
 
 	// -- Functions and calls --
 
-	// A module function value; env is filled in by MakeEnv
-	public static function func(fn:Dynamic, nargs:Int, module:NModule, global:Int):NFunction
-		return new NFunction(fn, nargs, Bytecode, null, module, "", global);
-
-	public static function makeEnv(f:Dynamic, env:Array<Dynamic>):NFunction {
-		if (!isFunction(f) || asFunction(f).kind != Bytecode)
-			error("Invalid environment");
-		var fn = asFunction(f);
-		return new NFunction(fn.fn, fn.nargs, Bytecode, env, fn.module, "", fn.global);
-	}
-
-	// Whether a tail call calls the function it is in, so it can loop instead
 	public static function isSelf(f:Dynamic, module:Dynamic, global:Int):Bool {
 		if (!isFunction(f))
 			return false;
@@ -758,21 +801,6 @@ class Rt {
 		}
 		return enterArgs(f, th, [a, b, c]);
 	}
-
-	public static function call0(f:Dynamic, th:Dynamic):Dynamic
-		return finish(enter0(f, th));
-
-	public static function call1(f:Dynamic, th:Dynamic, a:Dynamic):Dynamic
-		return finish(enter1(f, th, a));
-
-	public static function call2(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic):Dynamic
-		return finish(enter2(f, th, a, b));
-
-	public static function call3(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic, c:Dynamic):Dynamic
-		return finish(enter3(f, th, a, b, c));
-
-	public static function call4(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic, c:Dynamic, d:Dynamic):Dynamic
-		return callArgs(f, th, [a, b, c, d]);
 
 	public static function call5(f:Dynamic, th:Dynamic, a:Dynamic, b:Dynamic, c:Dynamic, d:Dynamic, e:Dynamic):Dynamic
 		return callArgs(f, th, [a, b, c, d, e]);

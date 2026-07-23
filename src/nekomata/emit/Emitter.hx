@@ -16,6 +16,7 @@ import nekomata.neko.StackCheck;
 //  only blocks reached from more than one place, such as loop heads, are cases of the
 //  switch. Calls of the module's own functions, through a global that holds the
 //  function whenever they run, call its static function directly.
+@:build(nekomata.build.NoFrames.build())
 class Emitter {
 	static inline var RT = "nekomata.rt.Rt";
 	static inline var BUILTINS = "nekomata.rt.NekoBuiltins";
@@ -52,7 +53,11 @@ class Emitter {
 	// Functions that can return a TailCall for their caller to make
 	var mayTail = new Map<Int, Bool>();
 	// Instructions some jump goes to
-	var targets = new Map<Int, Bool>();
+	var targets:Array<Bool>;
+	// Per function, indexed by code index: the blocks, and marks set to the scope's entry
+	var blockAt:Array<Block> = [];
+	var leadAt:Array<Int>;
+	var inScope:Array<Int>;
 	// The builtins the module names, by hash, as their index in its B array
 	var builtinIndex = new Map<Int, Int>();
 	var builtinHashes:Array<Int> = [];
@@ -109,19 +114,22 @@ class Emitter {
 
 	function analyse() {
 		var n = m.globals.length;
+		targets = [for (_ in 0...m.codeSize + 1) false];
+		leadAt = [for (_ in 0...m.codeSize + 1) -1];
+		inScope = [for (_ in 0...m.codeSize + 1) -1];
 		writes = [for (_ in 0...n) 0];
 		heldFunction = [for (_ in 0...n) -1];
 		for (s in scopes) {
-			targets.set(s.entry, true);
+			targets[s.entry] = true;
 			for (p in s.pcs()) {
 				if (p >= m.codeSize)
 					continue;
 				switch m.op(p) {
 					case Jump | JumpIf | JumpIfNot | Trap:
-						targets.set(m.target(p), true);
+						targets[m.target(p)] = true;
 					case JumpTable:
 						for (k in 0...m.param(p) + 1)
-							targets.set(p + 2 + 2 * k, true);
+							targets[p + 2 + 2 * k] = true;
 					case SetGlobal:
 						writes[m.param(p)]++;
 					default:
@@ -158,7 +166,7 @@ class Emitter {
 	// The function an AccGlobal just before p, with no jump to p, puts in the
 	//  accumulator, when it is a function global nothing writes; else -1
 	function storedFunction(p:Int):Int {
-		if (targets.exists(p) || p < 2 || !m.isOp[p - 2] || m.op(p - 2) != AccGlobal)
+		if (targets[p] || p < 2 || !m.isOp[p - 2] || m.op(p - 2) != AccGlobal)
 			return -1;
 		var f = m.param(p - 2);
 		return switch m.globals[f] {
@@ -191,7 +199,7 @@ class Emitter {
 
 	// The function an AccGlobal just before p, with no jump to p, gives for a call
 	function accFunction(p:Int):Int {
-		if (targets.exists(p) || p < 2 || !m.isOp[p - 2] || m.op(p - 2) != AccGlobal)
+		if (targets[p] || p < 2 || !m.isOp[p - 2] || m.op(p - 2) != AccGlobal)
 			return -1;
 		return heldFunction[m.param(p - 2)];
 	}
@@ -267,7 +275,7 @@ class Emitter {
 
 	// -- Functions --
 
-	var blocks:Map<Int, Block>;
+	var stamp = 0;
 	var order:Array<Block>;
 
 	function writeFunction(s:Scope) {
@@ -361,30 +369,30 @@ class Emitter {
 	// -- Blocks --
 
 	function buildBlocks(pcs:Array<Int>) {
-		var lead = new Map<Int, Bool>();
-		lead.set(scope.entry, true);
+		var mark = ++stamp;
+		leadAt[scope.entry] = mark;
 		for (p in pcs) {
 			if (p >= m.codeSize) {
-				lead.set(p, true);
+				leadAt[p] = mark;
 				continue;
 			}
 			switch m.op(p) {
 				case Jump | JumpIf | JumpIfNot | Trap:
-					lead.set(m.target(p), true);
-					lead.set(m.next(p), true);
+					leadAt[m.target(p)] = mark;
+					leadAt[m.next(p)] = mark;
 				case JumpTable:
 					for (k in 0...m.param(p) + 1)
-						lead.set(p + 2 + 2 * k, true);
+						leadAt[p + 2 + 2 * k] = mark;
 				case Ret | TailCall:
-					lead.set(m.next(p), true);
+					leadAt[m.next(p)] = mark;
 				default:
 			}
 		}
-		var reached = new Map<Int, Bool>();
-		for (p in pcs)
-			reached.set(p, true);
 
-		blocks = new Map();
+		for (p in pcs)
+			inScope[p] = mark;
+
+
 		order = [];
 		var i = 0;
 		while (i < pcs.length) {
@@ -399,20 +407,20 @@ class Emitter {
 				b.next = next;
 				if (op == Jump || op == Ret || op == TailCall || op == JumpTable || op == JumpIf || op == JumpIfNot || op == Trap)
 					break;
-				if (lead.exists(next) || !reached.exists(next))
+				if (leadAt[next] == mark || inScope[next] != mark)
 					break;
 				p = next;
 			}
-			blocks.set(b.start, b);
+			blockAt[b.start] = b;
 			order.push(b);
 			i++;
-			while (i < pcs.length && !lead.exists(pcs[i]))
+			while (i < pcs.length && leadAt[pcs[i]] != mark)
 				i++;
 		}
 
 		// The edges between blocks; the entry, trap handlers and jump table cases are
 		//  reached through the switch
-		blocks.get(scope.entry).forced = true;
+		blockAt[scope.entry].forced = true;
 		for (b in order) {
 			var p = b.code[b.code.length - 1];
 			b.succ = [];
@@ -424,12 +432,12 @@ class Emitter {
 						b.succ.push(m.target(p));
 						b.succ.push(m.next(p));
 					case Trap:
-						blocks.get(m.target(p)).forced = true;
+						blockAt[m.target(p)].forced = true;
 						b.succ.push(m.next(p));
 					case JumpTable:
 						for (k in 0...m.param(p) + 1) {
 							var t = p + 2 + 2 * k;
-							blocks.get(t).forced = true;
+							blockAt[t].forced = true;
 							b.succ.push(t);
 						}
 					case Ret | TailCall:
@@ -444,7 +452,7 @@ class Emitter {
 		while (work.length > 0) {
 			var b = work.pop();
 			for (t in b.succ) {
-				var c = blocks.get(t);
+				var c = blockAt[t];
 				c.preds++;
 				if (!c.reached) {
 					c.reached = true;
@@ -475,7 +483,7 @@ class Emitter {
 				if (b.accIn || b.writesAcc)
 					continue;
 				for (t in b.succ)
-					if (blocks.get(t).accIn) {
+					if (blockAt[t].accIn) {
 						b.accIn = true;
 						changed = true;
 						break;
@@ -489,7 +497,7 @@ class Emitter {
 	function accLiveAfter(b:Block):Array<Bool> {
 		var out = false;
 		for (t in b.succ)
-			if (blocks.get(t).accIn)
+			if (blockAt[t].accIn)
 				out = true;
 		var live = [for (_ in b.code) false];
 		var k = b.code.length;
@@ -566,7 +574,7 @@ class Emitter {
 	// Goes on to the block at t: inline when nothing else reaches it, else through
 	//  the switch with the state in locals
 	function goTo(t:Int, st:State, out:Array<E>, nest:Int) {
-		var b = blocks.get(t);
+		var b = blockAt[t];
 		if (b.inlined && nest < MAX_NEST) {
 			chain(b, st, out, nest);
 			return;
@@ -862,9 +870,18 @@ class Emitter {
 			case ObjCall:
 				var o = slotValue(st, d - 1);
 				var args = top(st, d - 1, param);
-				var f = consumeAcc(st, out, pos, true);
+				var a = st.acc;
+				var h = a != null && a.kind == EFFECT && !(a.canThrow && a.line != pos.line) ? fieldOf(a.e, o) : null;
+				var e:E;
+				if (h != null) {
+					// o.f(args) in one call: the field read, then the call, as before
+					st.acc = null;
+					pos.takes(a);
+					e = call('method$param', [o, EInt(h)].concat(args));
+				} else
+					e = call('call$param', [consumeAcc(st, out, pos, true), o].concat(args));
 				pop(st, d - 1 - param, d);
-				setAcc(st, out, effect(call('call$param', [f, o].concat(args)), pos));
+				setAcc(st, out, effect(e, pos));
 			case TailCall:
 				tailCall(param & 7, d, st, out, pos);
 				return true;
@@ -975,6 +992,25 @@ class Emitter {
 		return false;
 	}
 
+	// The field hash when e reads a field of o, Rt.field(o, h)
+	static function fieldOf(e:E, o:E):Null<Int> {
+		return switch e {
+			case ECallStatic(RT, "field", [obj, EInt(h)]) if (sameValue(obj, o)): h;
+			default: null;
+		}
+	}
+
+	// Whether two pending values are the same constant or local
+	static function sameValue(a:E, b:E):Bool {
+		return switch [a, b] {
+			case [EVar(x), EVar(y)]: x == y;
+			case [EInt(x), EInt(y)]: x == y;
+			case [ENull, ENull]: true;
+			case [EArrayI(EStatic(c1, f1), EInt(i)), EArrayI(EStatic(c2, f2), EInt(j))]: c1 == c2 && f1 == f2 && i == j;
+			default: false;
+		}
+	}
+
 	// A call of the module's function in global f, straight to its static function. It
 	//  is the function value with no environment, as AccGlobal gives it
 	function directCall(f:Int, args:Array<E>):E {
@@ -1004,7 +1040,7 @@ class Emitter {
 				if (!(value.kind == LOCAL && value.local == id))
 					loop.push(ESet(v(slots[i]), value.e));
 			}
-			flush(ls, loop, n, blocks.get(scope.entry).accIn);
+			flush(ls, loop, n, blockAt[scope.entry].accIn);
 			loop.push(set(pc, EInt(scope.entry)));
 			loop.push(EContinue);
 			if (known) {
@@ -1023,6 +1059,7 @@ class Emitter {
 }
 
 // Where an instruction is, and whether an effect it takes in can throw there
+@:build(nekomata.build.NoFrames.build())
 class Pos {
 	public var file:Int;
 	public var line:Int;
@@ -1043,6 +1080,7 @@ class Pos {
 }
 
 // A run of instructions with one way in, and the blocks it goes on to
+@:build(nekomata.build.NoFrames.build())
 class Block {
 	public var start:Int;
 	public var code:Array<Int> = [];
@@ -1064,6 +1102,7 @@ class Block {
 
 // A value not yet in a local: a constant, a local's value, or the result of an
 //  instruction, worked out where it is used
+@:build(nekomata.build.NoFrames.build())
 class Pending {
 	public var kind:Int;
 	public var e:E;
@@ -1106,6 +1145,7 @@ class Pending {
 }
 
 // What the slots and the accumulator hold where their locals do not
+@:build(nekomata.build.NoFrames.build())
 class State {
 	public var slots:Array<Pending>;
 	public var acc:Pending = null;
