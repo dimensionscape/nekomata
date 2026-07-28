@@ -51,6 +51,67 @@ class NekoBuiltins {
 		return v;
 	}
 
+	// Builtins that never run neko code, which translated code may call straight
+	//  from where it uses them: without a frame of their own, which neko's stack
+	//  traces would not show, as none of them calls back into neko code
+
+	@:noDebug public static function amake(n:Dynamic):Dynamic {
+		var size = int(n, "$amake");
+		var a:Array<Dynamic> = [];
+		if (size > 0)
+			a[size - 1] = null;
+		return a;
+	}
+
+	@:noDebug public static function asize(a:Dynamic):Dynamic {
+		if (Rt.typeOf(a) != Rt.TARRAY)
+			Rt.error("$asize");
+		return untyped __cpp__("{0}->__length()", a);
+	}
+
+	@:noDebug public static function ssize(s:Dynamic):Dynamic
+		return string(s, "$ssize").b.length;
+
+	@:noDebug public static function sget(s:Dynamic, p:Dynamic):Dynamic {
+		var b = string(s, "$sget").b, pos = int(p, "$sget");
+		return pos < 0 || pos >= b.length ? null : b.get(pos);
+	}
+
+	@:noDebug public static function sset(s:Dynamic, p:Dynamic, c:Dynamic):Dynamic {
+		var b = string(s, "$sset").b, pos = int(p, "$sset"), v = int(c, "$sset") & 0xFF;
+		if (pos < 0 || pos >= b.length)
+			return null;
+		b.set(pos, v);
+		return v;
+	}
+
+	@:noDebug public static function toInt(v:Dynamic):Dynamic {
+		switch Rt.typeOf(v) {
+			case Rt.TINT:
+				return v;
+			case Rt.TFLOAT:
+				var f = Rt.num(v);
+				if (Math.isNaN(f) || !Math.isFinite(f))
+					return null;
+				return Std.int(f);
+			case Rt.TSTRING:
+				return Std.parseInt(Rt.bytes(v).toString());
+			default:
+				return null;
+		}
+	}
+
+	@:noDebug public static function toFloat(v:Dynamic):Dynamic {
+		switch Rt.typeOf(v) {
+			case Rt.TINT | Rt.TFLOAT:
+				return new NFloat(Rt.num(v));
+			case Rt.TSTRING:
+				return new NFloat(Std.parseFloat(Rt.bytes(v).toString()));
+			default:
+				return null;
+		}
+	}
+
 	public static function init() {
 		if (table != null)
 			return;
@@ -64,15 +125,9 @@ class NekoBuiltins {
 
 		// Arrays
 		add("array", NFunction.VAR_ARGS, (args:Array<Dynamic>) -> args.copy());
-		add("amake", 1, function(n:Dynamic) {
-			var size = int(n, "$amake");
-			var a:Array<Dynamic> = [];
-			if (size > 0)
-				a[size - 1] = null;
-			return a;
-		});
+		add("amake", 1, amake);
 		add("acopy", 1, (a:Dynamic) -> array(a, "$acopy").copy());
-		add("asize", 1, (a:Dynamic) -> array(a, "$asize").length);
+		add("asize", 1, asize);
 		add("asub", 3, function(a:Dynamic, p:Dynamic, l:Dynamic) {
 			var arr = array(a, "$asub"), pos = int(p, "$asub"), len = int(l, "$asub");
 			if (pos < 0 || len < 0 || pos + len > arr.length)
@@ -99,7 +154,7 @@ class NekoBuiltins {
 
 		// Strings
 		add("smake", 1, (n:Dynamic) -> new NString(Bytes.alloc(int(n, "$smake"))));
-		add("ssize", 1, (s:Dynamic) -> string(s, "$ssize").b.length);
+		add("ssize", 1, ssize);
 		add("scopy", 1, function(s:Dynamic) {
 			var b = string(s, "$scopy").b;
 			var c = Bytes.alloc(b.length);
@@ -112,17 +167,8 @@ class NekoBuiltins {
 				Rt.error("$ssub");
 			return new NString(b.sub(pos, len));
 		});
-		add("sget", 2, function(s:Dynamic, p:Dynamic):Dynamic {
-			var b = string(s, "$sget").b, pos = int(p, "$sget");
-			return pos < 0 || pos >= b.length ? null : b.get(pos);
-		});
-		add("sset", 3, function(s:Dynamic, p:Dynamic, c:Dynamic):Dynamic {
-			var b = string(s, "$sset").b, pos = int(p, "$sset"), v = int(c, "$sset") & 0xFF;
-			if (pos < 0 || pos >= b.length)
-				return null;
-			b.set(pos, v);
-			return v;
-		});
+		add("sget", 2, sget);
+		add("sset", 3, sset);
 		add("sblit", 5, function(dst:Dynamic, dp:Dynamic, src:Dynamic, sp:Dynamic, l:Dynamic) {
 			var d = string(dst, "$sblit").b, s = string(src, "$sblit").b;
 			var dpos = int(dp, "$sblit"), spos = int(sp, "$sblit"), len = int(l, "$sblit");
@@ -187,31 +233,8 @@ class NekoBuiltins {
 		add("objgetproto", 1, (o:Dynamic) -> object(o, "$objgetproto").proto);
 
 		// Conversions and types
-		add("int", 1, function(v:Dynamic):Dynamic {
-			switch Rt.typeOf(v) {
-				case Rt.TINT:
-					return v;
-				case Rt.TFLOAT:
-					var f = Rt.num(v);
-					if (Math.isNaN(f) || !Math.isFinite(f))
-						return null;
-					return Std.int(f);
-				case Rt.TSTRING:
-					return Std.parseInt(Rt.bytes(v).toString());
-				default:
-					return null;
-			}
-		});
-		add("float", 1, function(v:Dynamic):Dynamic {
-			switch Rt.typeOf(v) {
-				case Rt.TINT | Rt.TFLOAT:
-					return new NFloat(Rt.num(v));
-				case Rt.TSTRING:
-					return new NFloat(Std.parseFloat(Rt.bytes(v).toString()));
-				default:
-					return null;
-			}
-		});
+		add("int", 1, toInt);
+		add("float", 1, toFloat);
 		add("string", 1, (v:Dynamic) -> new NString(Rt.valueBytes(v)));
 		add("typeof", 1, (v:Dynamic) -> Rt.typeOf(v));
 		add("compare", 2, (a:Dynamic, b:Dynamic) -> Rt.compareOp(a, b));

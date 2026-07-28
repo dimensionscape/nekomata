@@ -65,6 +65,23 @@ class Emitter {
 	static final loaderHash = nekomata.neko.Hash.field("loader");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
+	// Builtins that run no neko code, with the runtime function that does each
+	static final LEAF_BUILTINS:Map<Int, {cls:String, fn:String, nargs:Int, isBool:Bool, canThrow:Bool}> = [
+		for (b in [
+			{name: "not", cls: RT, fn: "not", nargs: 1, isBool: true, canThrow: false},
+			{name: "istrue", cls: RT, fn: "toBool", nargs: 1, isBool: true, canThrow: false},
+			{name: "typeof", cls: RT, fn: "typeOf", nargs: 1, isBool: false, canThrow: false},
+			{name: "asize", cls: BUILTINS, fn: "asize", nargs: 1, isBool: false, canThrow: true},
+			{name: "ssize", cls: BUILTINS, fn: "ssize", nargs: 1, isBool: false, canThrow: true},
+			{name: "sget", cls: BUILTINS, fn: "sget", nargs: 2, isBool: false, canThrow: true},
+			{name: "sset", cls: BUILTINS, fn: "sset", nargs: 3, isBool: false, canThrow: true},
+			{name: "amake", cls: BUILTINS, fn: "amake", nargs: 1, isBool: false, canThrow: true},
+			{name: "int", cls: BUILTINS, fn: "toInt", nargs: 1, isBool: false, canThrow: false},
+			{name: "float", cls: BUILTINS, fn: "toFloat", nargs: 1, isBool: false, canThrow: false}
+		])
+			nekomata.neko.Hash.field(b.name) => {cls: b.cls, fn: b.fn, nargs: b.nargs, isBool: b.isBool, canThrow: b.canThrow}
+	];
+
 	// How deep blocks written inline nest, at most, so the loader's recursion stays shallow
 	static inline var MAX_NEST = 100;
 	// The most cases one switch has under the JIT, which tests them one after another;
@@ -826,7 +843,11 @@ class Emitter {
 				unary(a -> call("aget", [a, EInt(m.slot(p))]), true);
 			case AccBuiltin:
 				if (param == loaderHash || param == exportsHash || builtinExists == null || builtinExists(param))
-					setAcc(st, out, Pending.ofConst(builtin(param)));
+				{
+					var c = Pending.ofConst(builtin(param));
+					c.builtin = param;
+					setAcc(st, out, c);
+				}
 				else
 					setAcc(st, out, effect(ECallStatic(BUILTINS, "get", [EInt(param)]), pos));
 			case SetStack:
@@ -867,13 +888,21 @@ class Emitter {
 				var args = top(st, d, param);
 				var f = st.acc;
 				var e:E;
-				if (f != null && f.kind == CONST && f.fn >= 0 && functionArgs(f.fn) == param) {
+				var leaf = f != null && f.kind == CONST && f.builtin != 0 ? LEAF_BUILTINS.get(f.builtin) : null;
+				var isBool = false, canThrow = true;
+				if (leaf != null && leaf.nargs == param) {
+					// A builtin that runs no neko code, called where it is used
+					st.acc = null;
+					e = ECallStatic(leaf.cls, leaf.fn, args);
+					isBool = leaf.isBool;
+					canThrow = leaf.canThrow;
+				} else if (f != null && f.kind == CONST && f.fn >= 0 && functionArgs(f.fn) == param) {
 					st.acc = null;
 					e = directCall(f.fn, args);
 				} else
 					e = call('call$param', [consumeAcc(st, out, pos, true), v(th)].concat(args));
 				pop(st, d - param, d);
-				setAcc(st, out, effect(e, pos));
+				setAcc(st, out, effect(e, pos, canThrow, isBool));
 			case ObjCall:
 				var o = slotValue(st, d - 1);
 				var args = top(st, d - 1, param);
@@ -1121,6 +1150,8 @@ class Pending {
 	public var isBool = false;
 	// An effect that can be left out when nothing reads its value
 	public var droppable = false;
+	// For a constant: the builtin it is, by hash, or 0
+	public var builtin = 0;
 	// For a constant: the module function it is, when it is a function global's value
 	public var fn = -1;
 

@@ -119,11 +119,12 @@ class Rt {
 	public static function floatOf(text:String):NFloat
 		return new NFloat(Std.parseFloat(text));
 
+	// Arrays are read through hxcpp's virtual item access, the same for the arrays the
+	//  runtime makes and the ones cppia makes, where an Array<Dynamic> cast would
+	//  dynamic_cast and wrap
 	public static function aget(a:Dynamic, i:Dynamic):Dynamic {
 		if (vt(a) == VT_ARRAY && isInt(i)) {
-			var arr:Array<Dynamic> = a;
-			var k:Int = i;
-			return k < 0 || k >= arr.length ? null : arr[k];
+			return untyped __cpp__("[](::hx::Object *o, int k) -> ::Dynamic { return k < 0 || k >= o->__length() ? ::Dynamic() : o->__GetItem(k); }({0}.mPtr, {1})", a, (i : Int));
 		}
 		if (isObject(a)) {
 			var r:Dynamic = objectOp(a, i, H_GET);
@@ -134,7 +135,6 @@ class Rt {
 		return error("Invalid array access");
 	}
 
-	// Returns the value the instruction leaves in the accumulator
 	public static function add(a:Dynamic, b:Dynamic):Dynamic {
 		var ta = typeOf(a), tb = typeOf(b);
 		if (ta == TINT && tb == TINT)
@@ -571,12 +571,10 @@ class Rt {
 		return error(n == null ? "Invalid field access" : "Invalid field access : " + n);
 	}
 
+	// Returns the value the instruction leaves in the accumulator
 	public static function aset(a:Dynamic, i:Dynamic, v:Dynamic):Dynamic {
 		if (vt(a) == VT_ARRAY && isInt(i)) {
-			var arr:Array<Dynamic> = a;
-			var k:Int = i;
-			if (k >= 0 && k < arr.length)
-				arr[k] = v;
+			untyped __cpp__("[](::hx::Object *o, int k, const ::Dynamic &v) { if (k >= 0 && k < o->__length()) o->__SetItem(k, v); }({0}.mPtr, {1}, {2})", a, (i : Int), v);
 			return v;
 		}
 		if (isObject(a)) {
