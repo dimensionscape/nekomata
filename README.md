@@ -42,6 +42,13 @@ haxe build.hxml
 Then `bin/host/nekomata path/to/module.n` runs a module, `-jit` turns on cppia's JIT,
 and `--emit out.cppia` saves the generated cppia.
 
+The host keeps each module it translates in a cache, so the next run loads the cppia
+without translating again. Entries are keyed by a hash of the bytecode, the module's
+name, the JIT setting and the host's own sources. The cache is `nekomata/cache` in
+`%LOCALAPPDATA%` on Windows and `nekomata` in `$XDG_CACHE_HOME` or `~/.cache`
+elsewhere; `NEKOMATA_CACHE` names another directory, or turns it off when set to
+`off`. `NEKOMATA_TIME=1` reports how long each module takes to translate and load.
+
 ## Trying it
 
 These run under Haxe's interpreter, with no native build:

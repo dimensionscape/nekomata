@@ -74,7 +74,14 @@ class Emitter {
 	// name is the module's name, the position of code that has no debug info. jit says
 	//  the module will run under cppia's JIT
 	public static function emit(m:Module, cls:String, name = "module", jit = false):haxe.io.Bytes
-		return new Emitter(m, cls, name, jit).run();
+		return translate(m, cls, name, jit).cppia;
+
+	// The cppia, and where in it the class name is, so a copy can be renamed
+	public static function translate(m:Module, cls:String, name = "module", jit = false):{cppia:haxe.io.Bytes, classAt:Int} {
+		var e = new Emitter(m, cls, name, jit);
+		var cppia = e.run();
+		return {cppia: cppia, classAt: e.w.classAt};
+	}
 
 	function new(m:Module, cls:String, name:String, jit:Bool) {
 		this.m = m;

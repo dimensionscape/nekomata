@@ -61,27 +61,55 @@ class Main {
 	static var timing = Sys.getEnv("NEKOMATA_TIME") == "1";
 	static var jit = false;
 
-	// Translates a module to cppia and runs it, returning its exports
+	// The class a module's code goes in: one per module loaded, all as long, so that a
+	//  cached translation can take the name of the class it loads as
+	static function className():String {
+		var n = Std.string(moduleCount++);
+		return "NekoModule" + StringTools.lpad(n, "0", 6);
+	}
+
+	// Translates a module to cppia, or takes the cached translation, and runs it,
+	//  returning its exports
 	static function load(name:String, bytes:haxe.io.Bytes, loader:NObject):NObject {
 		var t0 = haxe.Timer.stamp();
-		var m = Reader.read(bytes);
-		var t1 = haxe.Timer.stamp();
-		var cppia = Emitter.emit(m, 'NekoModule${moduleCount++}', name, jit);
-		var t2 = haxe.Timer.stamp();
+		var cls = className();
+		var key = Cache.enabled ? Cache.key(bytes, name, jit) : null;
+		var cppia = key == null ? null : Cache.get(key, cls);
+		var nm = new NModule(name, loader);
+		Boot.pending = nm;
+		var module:cpp.cppia.Module = null;
+		var t1 = haxe.Timer.stamp(), t2 = t1;
+		if (cppia != null)
+			try {
+				module = cpp.cppia.Module.fromData(cppia.getData());
+			} catch (e:Dynamic) {
+				// A cached translation that does not load is made again, as another class
+				cls = className();
+			}
+		var cached = module != null;
+		if (!cached) {
+			var m = Reader.read(bytes);
+			t1 = haxe.Timer.stamp();
+			var t = Emitter.translate(m, cls, name, jit);
+			cppia = t.cppia;
+			t2 = haxe.Timer.stamp();
+			if (key != null)
+				Cache.put(key, cppia, t.classAt, cls.length);
+		}
 		if (emitTo != null) {
 			sys.io.File.saveBytes(emitTo, cppia);
 			emitTo = null;
 		}
-		var nm = new NModule(name, loader);
-		Boot.pending = nm;
-		var module = cpp.cppia.Module.fromData(cppia.getData());
+		if (!cached)
+			module = cpp.cppia.Module.fromData(cppia.getData());
 		var t3 = haxe.Timer.stamp();
 		module.boot();
 		var t4 = haxe.Timer.stamp();
 		if (timing) {
 			inline function ms(a:Float, b:Float)
 				return Std.string(Math.round((b - a) * 1000));
-			Sys.stderr().writeString('[nekomata] $name: read ${ms(t0, t1)} ms, translate ${ms(t1, t2)} ms (${cppia.length} bytes), load ${ms(t2, t3)} ms, boot ${ms(t3, t4)} ms\n');
+			var how = cached ? 'cached, loaded in ${ms(t0, t3)} ms' : 'read ${ms(t0, t1)} ms, translate ${ms(t1, t2)} ms, load ${ms(t2, t3)} ms';
+			Sys.stderr().writeString('[nekomata] $name: ${cppia.length} bytes of cppia, $how, boot ${ms(t3, t4)} ms\n');
 		}
 		module.run();
 		return nm.exports;
