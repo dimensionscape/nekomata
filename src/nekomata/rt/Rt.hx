@@ -87,6 +87,32 @@ class Rt {
 	public static function method3(o:Dynamic, h:Int, a:Dynamic, b:Dynamic, c:Dynamic):Dynamic
 		return finish(enter3(field(o, h), o, a, b, c));
 
+	// Operations with an int constant on the right, as most in loops and recursion are:
+	//  the int goes into the call as it is, and only the other value is looked at
+	public static function addI(a:Dynamic, b:Int):Dynamic
+		return isInt(a) ? (a : Int) + b : add(a, b);
+
+	public static function subI(a:Dynamic, b:Int):Dynamic
+		return isInt(a) ? (a : Int) - b : sub(a, b);
+
+	public static function ltI(a:Dynamic, b:Int):Bool
+		return isInt(a) ? (a : Int) < b : lt(a, b);
+
+	public static function lteI(a:Dynamic, b:Int):Bool
+		return isInt(a) ? (a : Int) <= b : lte(a, b);
+
+	public static function gtI(a:Dynamic, b:Int):Bool
+		return isInt(a) ? (a : Int) > b : gt(a, b);
+
+	public static function gteI(a:Dynamic, b:Int):Bool
+		return isInt(a) ? (a : Int) >= b : gte(a, b);
+
+	public static function eqI(a:Dynamic, b:Int):Bool
+		return isInt(a) ? (a : Int) == b : eq(a, b);
+
+	public static function neqI(a:Dynamic, b:Int):Bool
+		return isInt(a) ? (a : Int) != b : neq(a, b);
+
 	public static function newObject(proto:Dynamic):NObject {
 		if (proto == null)
 			return new NObject();
@@ -136,18 +162,18 @@ class Rt {
 	}
 
 	public static function add(a:Dynamic, b:Dynamic):Dynamic {
-		var ta = typeOf(a), tb = typeOf(b);
+		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
 			return (a : Int) + (b : Int);
 		if (numeric(ta) && numeric(tb))
-			return new NFloat(num(a) + num(b));
+			return new NFloat(numberOf(a, ta) + numberOf(b, tb));
 		var r:Dynamic = objectOp(a, b, H_ADD);
 		if (!missing(r))
 			return r;
 		r = objectOp(b, a, H_RADD);
 		if (!missing(r))
 			return r;
-		if (ta == TSTRING || tb == TSTRING) {
+		if (ta == TSTRING || ta == K_HOST_STRING || tb == TSTRING || tb == K_HOST_STRING) {
 			var buf = new BytesBuffer();
 			appendValue(buf, a);
 			appendValue(buf, b);
@@ -183,11 +209,11 @@ class Rt {
 	}
 
 	public static function sub(a:Dynamic, b:Dynamic):Dynamic {
-		var ta = typeOf(a), tb = typeOf(b);
+		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
 			return (a : Int) - (b : Int);
 		if (numeric(ta) && numeric(tb))
-			return new NFloat(num(a) - num(b));
+			return new NFloat(numberOf(a, ta) - numberOf(b, tb));
 		return objectOps(a, b, H_SUB, H_RSUB, "-");
 	}
 
@@ -207,17 +233,27 @@ class Rt {
 		return callArgs(f, th, [a, b, c, d]);
 
 	public static function typeOf(v:Dynamic):Int {
+		var k = kind(v);
+		return k == K_HOST_FLOAT ? TFLOAT : k == K_HOST_STRING ? TSTRING : k;
+	}
+
+	// typeOf, with the host's own floats and strings, which primitives and host errors
+	//  give, told apart from the runtime's NFloat and NString
+	static inline var K_HOST_FLOAT = 9;
+	static inline var K_HOST_STRING = 10;
+
+	static function kind(v:Dynamic):Int {
 		switch vt(v) {
 			case 0:
 				return TNULL;
 			case VT_INT:
 				return TINT;
 			case VT_FLOAT:
-				return TFLOAT;
+				return K_HOST_FLOAT;
 			case VT_BOOL:
 				return TBOOL;
 			case VT_STRING:
-				return TSTRING;
+				return K_HOST_STRING;
 			case VT_ARRAY:
 				return TARRAY;
 			default:
@@ -225,12 +261,12 @@ class Rt {
 		}
 	}
 
-	// Whether v is an instance of one of the runtime's value classes, in one virtual call
 	// -- Values --
 
 	static inline function vt(v:Dynamic):Int
 		return v == null ? 0 : untyped v.__GetType();
 
+	// Whether v is an instance of one of the runtime's value classes, in one virtual call
 	//  where Std.isOfType makes several, and the value as that class without a second check
 	public static inline function isFunction(v:Dynamic):Bool
 		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::NFunction_obj::_hx_ClassId); }({0}.mPtr)", v);
@@ -399,7 +435,11 @@ class Rt {
 
 	// Whether a neko type is int or float
 	static inline function numeric(t:Int):Bool
-		return t == TINT || t == TFLOAT;
+		return t == TINT || t == TFLOAT || t == K_HOST_FLOAT;
+
+	// A number of kind k as a Float
+	static inline function numberOf(v:Dynamic, k:Int):Float
+		return k == TINT ? (v : Int) : k == TFLOAT ? asNFloat(v).v : (v : Float);
 
 
 	// The operator fields of objects, for an operation on numbers whose operands are not
@@ -415,16 +455,16 @@ class Rt {
 	}
 
 	public static function mult(a:Dynamic, b:Dynamic):Dynamic {
-		var ta = typeOf(a), tb = typeOf(b);
+		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
 			return (a : Int) * (b : Int);
 		if (numeric(ta) && numeric(tb))
-			return new NFloat(num(a) * num(b));
+			return new NFloat(numberOf(a, ta) * numberOf(b, tb));
 		return objectOps(a, b, H_MULT, H_RMULT, "*");
 	}
 
 	public static function mod(a:Dynamic, b:Dynamic):Dynamic {
-		var ta = typeOf(a), tb = typeOf(b);
+		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT) {
 			var y:Int = b;
 			if (y == 0)
@@ -432,13 +472,14 @@ class Rt {
 			return (a : Int) % y;
 		}
 		if (numeric(ta) && numeric(tb))
-			return new NFloat(num(a) % num(b));
+			return new NFloat(numberOf(a, ta) % numberOf(b, tb));
 		return objectOps(a, b, H_MOD, H_RMOD, "%");
 	}
 
 	public static function div(a:Dynamic, b:Dynamic):Dynamic {
-		if (numeric(typeOf(a)) && numeric(typeOf(b)))
-			return new NFloat(num(a) / num(b));
+		var ta = kind(a), tb = kind(b);
+		if (numeric(ta) && numeric(tb))
+			return new NFloat(numberOf(a, ta) / numberOf(b, tb));
 		return objectOps(a, b, H_DIV, H_RDIV, "/");
 	}
 
@@ -484,11 +525,13 @@ class Rt {
 
 	// Neko's val_compare: 0, -1, 1, or INVALID
 	public static function compare(a:Dynamic, b:Dynamic):Int {
-		var ta = typeOf(a), tb = typeOf(b);
-		if (ta == TINT && tb == TINT)
+		var ka = kind(a), kb = kind(b);
+		if (ka == TINT && kb == TINT)
 			return icmp(a, b);
-		if (numeric(ta) && numeric(tb))
-			return fcmp(num(a), num(b));
+		if (numeric(ka) && numeric(kb))
+			return fcmp(numberOf(a, ka), numberOf(b, kb));
+		var ta = ka == K_HOST_FLOAT ? TFLOAT : ka == K_HOST_STRING ? TSTRING : ka;
+		var tb = kb == K_HOST_FLOAT ? TFLOAT : kb == K_HOST_STRING ? TSTRING : kb;
 		if (ta == TSTRING && tb == TSTRING)
 			return bcmp(bytes(a), bytes(b));
 		if (ta == TSTRING && (tb == TINT || tb == TFLOAT || tb == TBOOL))

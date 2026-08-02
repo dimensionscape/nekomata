@@ -65,6 +65,9 @@ class Emitter {
 	static final loaderHash = nekomata.neko.Hash.field("loader");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
+	// The operations the runtime has a version of with an int on the right
+	static final INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq"]) op => true];
+
 	// Builtins that run no neko code, with the runtime function that does each
 	static final LEAF_BUILTINS:Map<Int, {cls:String, fn:String, nargs:Int, isBool:Bool, canThrow:Bool}> = [
 		for (b in [
@@ -130,6 +133,7 @@ class Emitter {
 		w.staticVar("B", CppiaWriter.ARRAY);
 		for (s in scopes)
 			writeFunction(s);
+		gLocal = null;
 		w.main(mainExpr());
 		return w.toBytes();
 	}
@@ -250,8 +254,20 @@ class Emitter {
 	inline function set(l:Local, e:E):E
 		return ESet(EVar(l.id), e);
 
-	inline function globals():E
-		return EStatic(cls, "G");
+	// The module's globals: in a function, a local the function reads them through,
+	//  so the code names the static once rather than at each use, which the garbage
+	//  collector marks every time
+	function globals():E {
+		if (gLocal == null)
+			return EStatic(cls, "G");
+		usesG = true;
+		return v(gLocal);
+	}
+
+	var gLocal:Local;
+	var bLocal:Local;
+	var usesG:Bool;
+	var usesB:Bool;
 
 	inline function moduleRef():E
 		return EStatic(cls, "M");
@@ -263,7 +279,8 @@ class Emitter {
 			builtinHashes.push(h);
 			builtinIndex.set(h, k);
 		}
-		return EArrayI(EStatic(cls, "B"), EInt(k));
+		usesB = true;
+		return EArrayI(v(bLocal), EInt(k));
 	}
 
 	function mainExpr():E {
@@ -316,6 +333,9 @@ class Emitter {
 			if (p < m.codeSize && m.op(p) == Trap)
 				hasTraps = true;
 		traps = hasTraps ? local("traps", CppiaWriter.ARRAY) : null;
+		gLocal = local("g", CppiaWriter.ARRAY);
+		bLocal = local("b", CppiaWriter.ARRAY);
+		usesG = usesB = false;
 
 		buildBlocks(pcs);
 
@@ -337,6 +357,10 @@ class Emitter {
 		cases.sort((a, b) -> a.value - b.value);
 
 		var body:Array<E> = [EDecl(acc, ENull)];
+		if (usesG)
+			body.push(EDecl(gLocal, EStatic(cls, "G")));
+		if (usesB)
+			body.push(EDecl(bLocal, EStatic(cls, "B")));
 		for (i in nargs...slots.length)
 			body.push(EDecl(slots[i], ENull));
 		body.push(EDecl(pc, EInt(s.entry)));
@@ -797,7 +821,12 @@ class Emitter {
 			var a = slotValue(st, d - 1);
 			var b = consumeAcc(st, out, pos, canThrow);
 			pop(st, d - 1, d);
-			setAcc(st, out, effect(call(name, [a, b]), pos, canThrow, isBool));
+			// With an int constant on the right, the runtime takes the int as it is
+			var e = switch b {
+				case EInt(_) if (INT_OPS.exists(name)): call(name + "I", [a, b]);
+				default: call(name, [a, b]);
+			}
+			setAcc(st, out, effect(e, pos, canThrow, isBool));
 		}
 		function unary(make:E->E, canThrow:Bool, isBool = false) {
 			var a = consumeAcc(st, out, pos, canThrow);
@@ -1043,6 +1072,7 @@ class Emitter {
 			case [EInt(x), EInt(y)]: x == y;
 			case [ENull, ENull]: true;
 			case [EArrayI(EStatic(c1, f1), EInt(i)), EArrayI(EStatic(c2, f2), EInt(j))]: c1 == c2 && f1 == f2 && i == j;
+			case [EArrayI(EVar(x), EInt(i)), EArrayI(EVar(y), EInt(j))]: x == y && i == j;
 			default: false;
 		}
 	}
