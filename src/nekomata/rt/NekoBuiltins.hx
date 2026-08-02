@@ -5,6 +5,66 @@ import nekomata.rt.Values;
 
 // Neko's $ builtins (vm/builtins.c)
 @:keep
+@:cppFileCode('
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+#include <string>
+
+// $int of a float, as neko converts it on each system
+static int nk_float_to_int(double f)
+{
+   #ifdef HX_WINDOWS
+   return (int)f;
+   #else
+   return (int)(unsigned int)fmod(f, 4294967296.0);
+   #endif
+}
+
+// $int of a string (builtin_int): hex after an optional sign, else strtol, which
+//  stops at the first NUL as in neko
+static int nk_string_to_int(Array<unsigned char> inBytes, int inLen, bool &outOk)
+{
+   std::string text(inLen ? (const char *)&inBytes[0] : "", inLen);
+   const char *c = text.c_str();
+   char *end;
+   while (isspace((unsigned char)*c))
+      ++c;
+   char sign = c[0];
+   bool isSigned = sign == 0x2d || sign == 0x2b;
+   bool hex = isSigned ? (inLen >= 3 && c[1] == 0x30 && (c[2] == 0x78 || c[2] == 0x58))
+                       : (inLen >= 2 && c[0] == 0x30 && (c[1] == 0x78 || c[1] == 0x58));
+   outOk = true;
+   if (hex)
+   {
+      int h = 0;
+      c += isSigned ? 3 : 2;
+      while (*c)
+      {
+         char k = *c++;
+         if (k >= 0x30 && k <= 0x39) h = (h << 4) | (k - 0x30);
+         else if (k >= 0x41 && k <= 0x46) h = (h << 4) | ((k - 0x41) + 10);
+         else if (k >= 0x61 && k <= 0x66) h = (h << 4) | ((k - 0x61) + 10);
+         else break;
+      }
+      return sign == 0x2d ? -h : h;
+   }
+   long h = strtol(c, &end, 10);
+   if (c == end)
+      outOk = false;
+   return (int)h;
+}
+
+static double nk_string_to_float(Array<unsigned char> inBytes, int inLen, bool &outOk)
+{
+   std::string text(inLen ? (const char *)&inBytes[0] : "", inLen);
+   char *end;
+   double f = strtod(text.c_str(), &end);
+   outOk = end != text.c_str();
+   return f;
+}
+')
 class NekoBuiltins {
 	static var table:haxe.ds.IntMap<NFunction>;
 
@@ -185,12 +245,12 @@ class NekoBuiltins {
 				case Rt.TINT:
 					return v;
 				case Rt.TFLOAT:
-					var f = Rt.num(v);
-					if (Math.isNaN(f) || !Math.isFinite(f))
-						return null;
-					return Std.int(f);
+					return untyped __cpp__("nk_float_to_int({0})", Rt.num(v));
 				case Rt.TSTRING:
-					return Std.parseInt(Rt.bytes(v).toString());
+					var b = Rt.bytes(v);
+					var ok = false;
+					var r:Int = untyped __cpp__("nk_string_to_int({0}, {1}, {2})", b.getData(), b.length, ok);
+					return ok ? r : null;
 				default:
 					return null;
 			}
@@ -200,7 +260,10 @@ class NekoBuiltins {
 				case Rt.TINT | Rt.TFLOAT:
 					return new NFloat(Rt.num(v));
 				case Rt.TSTRING:
-					return new NFloat(Std.parseFloat(Rt.bytes(v).toString()));
+					var b = Rt.bytes(v);
+					var ok = false;
+					var r:Float = untyped __cpp__("nk_string_to_float({0}, {1}, {2})", b.getData(), b.length, ok);
+					return ok ? new NFloat(r) : null;
 				default:
 					return null;
 			}
