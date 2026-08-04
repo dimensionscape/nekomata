@@ -59,16 +59,24 @@ null, `Array<Dynamic>`), so they cost nothing to pass to primitives.
 | 7 | Native extensions | ndlls rebuilt against hxcpp CFFI load; then a libneko shim for prebuilt neko ndlls |
 | 8 | Speed | Profile, then add native expression nodes through a libhxcpp hook where calls cost most |
 
-Milestones 1 and 2 are done. libhxcpp's `run.n` and haxelib's `run.n` translate, load and
-start, then stop at `std@thread_current`, the first primitive milestone 3 adds.
+Milestones 1 to 3 are done, and parts of 4 and 6: libhxcpp's `run.n` runs `hxcpp.n`,
+which builds a C program as on neko; lime's and openfl's run scripts print what they
+print on neko; neko's own `nekoc`, run on the host, compiles to the same bytes as on
+neko; and Haxe 4.3.7's unit tests pass on the host, interpreted and with the JIT, except
+the 4 tests that need zlib and ssl.
 
 ## Test corpus
+
+Neko is the oracle: every check runs the same module on neko and on the host.
 
 - libhxcpp `run.n` and `hxcpp.n` (Haxe 4 output)
 - haxelib's `run.n`
 - `run.n` from popular libraries (lime, openfl, hxcpp releases from several Haxe versions)
-- Haxe unit tests compiled with `-neko`
-- hand-written neko from neko's own tests, for code the Haxe compiler never emits
+- Haxe 4.3.7's unit, sys and threads suites, as Haxe's CI runs them for neko
+  (`test/upstream/fetch.sh` pins them, with utest at the commit Haxe's CI uses)
+- neko 2.4.1's benchmarks, and its bootstrap compilers (`boot/nekoc.n`, `boot/nekoml.n`):
+  run on the host, they must build neko's compilers and programs to the same bytes as
+  on neko. nekoml's code is nothing like the Haxe compiler's
 
 ## Semantics to match exactly
 
@@ -92,9 +100,26 @@ start, then stop at `std@thread_current`, the first primitive milestone 3 adds.
   dispatch loop and a cache of translated modules keyed by content hash all belong to
   milestone 8, and the cache may need to come earlier for haxelib.
 
+## Notes from milestone 3
+
+- Tail calls: neko's `TailCall` pops the caller's frame before calling. nekoml compiles
+  its loops that way, so a call in tail position to the function itself becomes a jump
+  back to its start, and any other returns a `TailCall` for the caller's call helper to
+  make. Stack traces then leave the frame out, as neko's do.
+- Hash tables are laid out cell for cell as neko's, with `val_hash`, since programs
+  print or generate code in `$hiter` order, and nekoml's compare keys with a function.
+- Neko recurses as deep as 256K stack values; libhxcpp gives cppia scripts a fixed 128K
+  stack per thread. The host swaps in a 16M one on each thread before running neko code,
+  and links a 256M native stack on Windows, until libhxcpp makes the size configurable.
+- cppia's JIT cannot carry a thrown null (its pending exception slot uses null for none)
+  and turns it into an empty string; the runtime throws a marker instead. libhxcpp's JIT
+  should be fixed too.
+- `$excstack` is recorded when a value is raised and cut at the catching function, as
+  neko's is; hxcpp's own record of an unwind holds no frame of the function that caught.
+
 ## Open questions
 
 - Performance of the switch-dispatch form against neko's interpreter; structured
-  control flow recovery is the next step if dispatch dominates.
-- Deep `TailCall` recursion: neko reuses the frame, cppia does not.
+  control flow recovery is the next step if dispatch dominates. First timings on neko's
+  benchmarks range from 2.5 times faster to 13 times slower than neko.
 - License: to be chosen before the first public push.
