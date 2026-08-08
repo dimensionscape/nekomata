@@ -19,7 +19,7 @@ class NekoStack {
 		for (item in items)
 			switch item {
 				case FilePos(Method(cls, _), escaped, line, _):
-					var file = StringTools.replace(escaped, nekomata.emit.Emitter.COLONS, "::");
+					var file = nekomata.emit.Emitter.unescapeFile(escaped);
 					if (StringTools.startsWith(cls, "NekoModule")) {
 						if (StringTools.endsWith(file, "@"))
 							result.push(NString.of(file.substr(0, file.length - 1)));
