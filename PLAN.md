@@ -122,4 +122,3 @@ Neko is the oracle: every check runs the same module on neko and on the host.
 - Performance of the switch-dispatch form against neko's interpreter; structured
   control flow recovery is the next step if dispatch dominates. First timings on neko's
   benchmarks range from 2.5 times faster to 13 times slower than neko.
-- License: to be chosen before the first public push.

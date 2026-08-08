@@ -1,0 +1,46 @@
+# Builds the host against libhxcpp's main branch and runs the test harness, with neko
+# as the oracle, on each system Nekomata supports
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out libhxcpp
+        uses: actions/checkout@v4
+        with:
+          repository: openfl/libhxcpp
+          path: libhxcpp
+
+      - name: Install Haxe and neko
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: 4.3.7
+
+      - name: Point hxcpp at libhxcpp
+        run: |
+          haxelib newrepo
+          haxelib dev hxcpp "$(pwd)/libhxcpp"
+
+      - name: Build the host
+        run: haxe build.hxml
+
+      - name: Fetch the upstream test sources
+        run: test/upstream/fetch.sh
+
+      - name: Run the tests
+        run: haxe test/harness.hxml
