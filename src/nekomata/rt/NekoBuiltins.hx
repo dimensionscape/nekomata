@@ -109,9 +109,16 @@ class NekoBuiltins {
 			return;
 		table = new haxe.ds.IntMap();
 
+		// One write for all the arguments, as neko builds them into one string
 		add("print", NFunction.VAR_ARGS, function(args:Array<Dynamic>) {
-			for (a in args)
-				Rt.print(a);
+			if (args.length == 1)
+				Rt.print(args[0]);
+			else {
+				var buf = new haxe.io.BytesBuffer();
+				for (a in args)
+					Rt.appendValue(buf, a);
+				Rt.print(new NString(buf.getBytes()));
+			}
 			return true;
 		});
 

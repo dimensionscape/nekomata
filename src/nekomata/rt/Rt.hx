@@ -782,8 +782,12 @@ class Rt {
 		}
 	}
 
+	// Neko's printer writes and flushes at once, so output keeps its order with what
+	//  a child process prints
 	public static function print(v:Dynamic):Void {
 		var b = valueBytes(v);
-		Sys.stdout().writeBytes(b, 0, b.length);
+		var out = Sys.stdout();
+		out.writeBytes(b, 0, b.length);
+		out.flush();
 	}
 }
