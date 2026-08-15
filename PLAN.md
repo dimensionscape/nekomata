@@ -59,11 +59,22 @@ null, `Array<Dynamic>`), so they cost nothing to pass to primitives.
 | 7 | Native extensions | ndlls rebuilt against hxcpp CFFI load; then a libneko shim for prebuilt neko ndlls |
 | 8 | Speed | Profile, then add native expression nodes through a libhxcpp hook where calls cost most |
 
-Milestones 1 to 3 are done, and parts of 4 and 6: libhxcpp's `run.n` runs `hxcpp.n`,
-which builds a C program as on neko; lime's and openfl's run scripts print what they
-print on neko; neko's own `nekoc`, run on the host, compiles to the same bytes as on
-neko; and Haxe 4.3.7's unit tests pass on the host, interpreted and with the JIT, except
-the 4 tests that need zlib and ssl.
+Milestones 1 to 3 are done, with most of 4, 5 and 6:
+
+- libhxcpp's `run.n` runs `hxcpp.n`, which builds a C program as on neko; lime's,
+  openfl's and stock hxcpp's run scripts print what they print on neko.
+- neko's own `nekoc`, run on the host, compiles to the same bytes as on neko.
+- Haxe 4.3.7's unit tests all pass on the host, interpreted and with the JIT, and its sys
+  and threads suites give the same results as on neko.
+- Every primitive of neko's std, regexp, zlib, ssl and sqlite libraries is there, on
+  libhxcpp's ports where they match neko and on the C libraries where they do not.
+- The host stands in for neko (`tools/install-neko.sh`): with it first on PATH, haxelib's
+  `version`, `list`, `path`, `run` and `install` print what they print on neko, and
+  haxelib's `info` reads lib.haxe.org over HTTPS. `nekomata boot` writes executables in
+  `nekotools boot`'s format, and runs those nekotools writes.
+
+Left: `hxcpp.n` building libhxcpp itself and bigger projects (milestone 4), a `haxelib`
+executable that needs no neko install (5), native extensions (7) and speed (8).
 
 ## Test corpus
 
