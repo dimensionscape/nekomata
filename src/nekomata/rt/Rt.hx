@@ -378,10 +378,16 @@ class Rt {
 		return untyped __cpp__("((size_t){0}.mPtr > (size_t){1}.mPtr) ? 1 : -1", a, b);
 	}
 
+	// $hash and the Hash opcode record the name, as neko's val_id does, so $field and
+	//  error messages can name the field later
 	public static function hash(v:Dynamic):Int {
 		if (!isString(v))
 			error("$hash");
-		return nekomata.neko.Hash.field(bytes(v).toString());
+		var name = bytes(v).toString();
+		var h = nekomata.neko.Hash.field(name);
+		if (!names.exists(h))
+			names.set(h, name);
+		return h;
 	}
 
 	// -- Objects, fields and arrays --

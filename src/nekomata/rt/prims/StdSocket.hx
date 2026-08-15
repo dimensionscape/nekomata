@@ -63,6 +63,8 @@ class StdSocket {
 		add("std@socket_close", 1, function(s:Dynamic) {
 			var sh = socket(s, "std@socket_close");
 			run(() -> cpp.NativeSocket.socket_close(sh));
+			// Neko clears the kind, so the closed socket fails every later call
+			(s : NAbstract).kind = null;
 			return null;
 		});
 		add("std@socket_send_char", 2, function(s:Dynamic, c:Dynamic) {
@@ -98,8 +100,16 @@ class StdSocket {
 		});
 		add("std@socket_connect", 3, function(s:Dynamic, ip:Dynamic, port:Dynamic) {
 			var sh = socket(s, "std@socket_connect"), addr = int(ip, "std@socket_connect"), pn = int(port, "std@socket_connect");
-			run(() -> cpp.NativeSocket.socket_connect(sh, addr, pn));
-			return null;
+			// libhxcpp throws EOF for a refused connection; neko fails with the primitive's
+			//  name, which Haxe's std turns into "Failed to connect on host:port"
+			try
+				cpp.NativeSocket.socket_connect(sh, addr, pn)
+			catch (e:Dynamic) {
+				if (Std.string(e) == "Blocking")
+					Rt.raise(NString.of("Blocking"));
+				Primitives.fail("std@socket_connect");
+			}
+			return true;
 		});
 		add("std@socket_bind", 3, function(s:Dynamic, ip:Dynamic, port:Dynamic) {
 			var sh = socket(s, "std@socket_bind"), addr = int(ip, "std@socket_bind"), pn = int(port, "std@socket_bind");
