@@ -237,8 +237,12 @@ class NekoBuiltins {
 			return [for (k in obj.keys()) k];
 		});
 		add("hash", 1, (s:Dynamic) -> Rt.hash(s));
-		add("fasthash", 1, (s:Dynamic) -> Rt.hash(s));
-		add("field", 1, (f:Dynamic) -> Rt.str(Rt.fieldName(int(f, "$field"))));
+		// $fasthash hashes without recording the name, unlike $hash
+		add("fasthash", 1, (s:Dynamic) -> nekomata.neko.Hash.field(string(s, "$fasthash").b.toString()));
+		add("field", 1, function(f:Dynamic):Dynamic {
+			var n = Rt.knownFieldName(int(f, "$field"));
+			return n == null ? null : Rt.str(n);
+		});
 		add("objsetproto", 2, function(o:Dynamic, p:Dynamic) {
 			var obj = object(o, "$objsetproto");
 			obj.proto = p == null ? null : object(p, "$objsetproto");

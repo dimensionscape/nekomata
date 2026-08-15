@@ -472,6 +472,10 @@ class Rt {
 		}
 	}
 
+	// The name some module declared or $hash recorded for a field, or null
+	public static inline function knownFieldName(h:Int):Null<String>
+		return names.get(h);
+
 	public static function fieldName(h:Int):String {
 		var n = names.get(h);
 		return n == null ? '#$h' : n;
