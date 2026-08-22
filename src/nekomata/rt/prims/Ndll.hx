@@ -294,7 +294,7 @@ class Ndll {
 		if (lib != null)
 			return lib;
 		var path = Std.isOfType(loader, NObject) ? (loader : NObject).find(H_PATH) : null;
-		var file = selectFile(path, libName, ".ndll");
+		var file = NekoLoader.selectFile(path, libName, ".ndll");
 		if (!sys.FileSystem.exists(file) || sys.FileSystem.isDirectory(file))
 			failure("Failed to load library : " + file, 237);
 		var full = sys.FileSystem.fullPath(file);
@@ -324,40 +324,9 @@ class Ndll {
 		return lib;
 	}
 
-	// neko_select_file: the file itself, then each directory of the loader's path
-	static function selectFile(path:Dynamic, file:String, ext:String):String {
-		var ff = file + ext;
-		if (sys.FileSystem.exists(ff))
-			return file.indexOf("/") >= 0 || file.indexOf("\\") >= 0 ? ff : "./" + ff;
-		while (Std.isOfType(path, Array) && (path : Array<Dynamic>).length == 2) {
-			var cell:Array<Dynamic> = path;
-			var p = Rt.valueBytes(cell[0]).toString() + ff;
-			if (sys.FileSystem.exists(p))
-				return p;
-			path = cell[1];
-		}
-		return ff;
-	}
-
-	// What neko's failure() throws: an object that prints as file(line) : msg
-	static function failure(msg:String, line:Int):Dynamic {
-		Rt.registerFields(["msg", "file", "line", "__string"]);
-		var o = new NObject();
-		o.fields.set(nekomata.neko.Hash.field("msg"), NString.of(msg));
-		o.fields.set(nekomata.neko.Hash.field("file"), NString.of("load.c"));
-		o.fields.set(nekomata.neko.Hash.field("line"), line);
-		o.fields.set(nekomata.neko.Hash.field("__string"), new NFunction(function(th:Dynamic):Dynamic {
-			var f:NObject = th;
-			var b = new haxe.io.BytesBuffer();
-			Rt.appendValue(b, f.find(nekomata.neko.Hash.field("file")));
-			b.addString("(");
-			Rt.appendValue(b, f.find(nekomata.neko.Hash.field("line")));
-			b.addString(") : ");
-			Rt.appendValue(b, f.find(nekomata.neko.Hash.field("msg")));
-			return new NString(b.getBytes());
-		}, 0, PrimitiveThis, null, null, "failure_to_string"));
-		return Rt.raise(o);
-	}
+	// What load_primitive raises, from the lines of load.c neko reports
+	static function failure(msg:String, line:Int):Dynamic
+		return NekoLoader.failure(msg, "load.c", line);
 
 	// A neko function of nargs arguments that hands them to call as an array
 	static function fixedArity(nargs:Int, call:Array<Dynamic>->Dynamic):Dynamic {
