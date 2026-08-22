@@ -1,0 +1,27 @@
+// test/ndll's library from plain neko. Its neko_init gets constructors that keep neko's
+//  own strings and arrays, since without one hxcpp's glue makes true, false and null as
+//  C NULLs. Left out: lengths of neko strings and arrays, which hxcpp's glue reads with
+//  neko 1.8's tag layout (3 bits, where neko 2 has 4), so on neko they come out twice too
+//  long; and the types of neko strings, which stand for byte buffers under hxcpp's API
+var prim = function(name, n) { $loader.loadprim("ndlltest@" + name, n) };
+prim("neko_init", 5)(function(s) { s }, function(n) { $amake(n) }, null, true, false);
+var add = prim("nt_add", 2);
+$print(add(2, 3), " ", add(1.5, 2), "\n");
+$print(prim("nt_concat", 2)("raw", "strings"), "\n");
+var o = $new(null);
+o.x = 5;
+o.name = "obj";
+var get = prim("nt_get_field", 2);
+$print(get(o, "x"), " ", get(o, "name"), " ", get(o, "nothing"), "\n");
+prim("nt_set_field", 3)(o, "y", $array(1, "two"));
+$print(o, "\n");
+$print(prim("nt_call", 2)(function(x) { x * 2 }, 21), "\n");
+var made = prim("nt_object", 0)();
+$print(made, "\n");
+$print($typeof(made.name), " ", $typeof(made.list), " ", $typeof(made.inner), "\n");
+$print(prim("nt_array_make", 1)(3), "\n");
+try prim("nt_throw", 1)("raw error") catch e $print("caught ", e, "\n");
+var sum = prim("nt_sum", -1);
+$print(sum(1, 2), " ", $nargs(sum), "\n");
+var c = prim("nt_counter", 1)(7);
+$print(prim("nt_counter_next", 1)(c), " ", prim("nt_counter_next", 1)(c), " ", $typeof(c), "\n");
