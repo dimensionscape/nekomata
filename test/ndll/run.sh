@@ -3,7 +3,8 @@
 # points at, runs the programs that load it on neko and on the Nekomata host
 # (interpreted and with the JIT), and checks the output matches: NdllTest.hx built for
 # neko and raw.neko. When hxcpp is a libhxcpp checkout and utest is installed, its own
-# test/cffi suite runs the same way, and with lime installed LimeTest.hx calls lime.ndll.
+# test/cffi suite runs the same way. With lime installed, LimeTest.hx calls lime.ndll,
+# and lime's own svg.n renders an icon through it, which must come out byte for byte.
 # Needs haxe, haxelib, neko and nekoc, and the host built with haxe build.hxml. The
 # libraries are built 64-bit, as neko is on 64-bit systems. Usage: test/ndll/run.sh
 set -u
@@ -18,10 +19,11 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # A haxelib repository of the work directory's own: this checkout's hxcpp, and the
-#  global utest
+#  global utest and lime
 (
    cd "$WORK" && haxelib newrepo > /dev/null && haxelib dev hxcpp "$HXCPP" > /dev/null
    [ -z "$UTEST" ] || haxelib dev utest "$UTEST" > /dev/null
+   [ -z "$LIME" ] || haxelib dev lime "$LIME" > /dev/null
 )
 
 case "$(uname -s)" in
@@ -91,6 +93,22 @@ if [ -n "$LIME" ] && [ -f "$LIME/ndll/$BIN/lime.ndll" ]; then
    mkdir -p "$WORK/lime"
    haxe -cp test/ndll -main LimeTest -neko "$WORK/lime/LimeTest.n"
    check "LimeTest ($LIME)" "$WORK/lime" "" LimeTest.n "$LIME/ndll/$BIN/lime" "$LIME/templates/default/icon.svg"
+   # svg.n finds lime.ndll through haxelib path lime, and draws with its cairo
+   svg="$LIME/templates/default/icon.svg"
+   if (cd "$WORK/lime" && neko "$LIME/svg.n" process "$svg" 64 64 neko.png > /dev/null 2>&1); then
+      for mode in "" "-jit"; do
+         rm -f "$WORK/lime/host.png"
+         (cd "$WORK/lime" && "$HOST" $mode "$LIME/svg.n" process "$svg" 64 64 host.png > /dev/null 2>&1)
+         if cmp -s "$WORK/lime/neko.png" "$WORK/lime/host.png"; then
+            echo "ok   lime svg.n ${mode:-interp}"
+         else
+            echo "FAIL lime svg.n ${mode:-interp}: the PNG differs from neko's"
+            failures=$((failures + 1))
+         fi
+      done
+   else
+      echo "skip lime svg.n (it does not run on neko here)"
+   fi
 else
    echo "skip LimeTest (lime is not installed)"
 fi
