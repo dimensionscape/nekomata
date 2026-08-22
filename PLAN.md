@@ -41,10 +41,13 @@ null, `Array<Dynamic>`), so they cost nothing to pass to primitives.
 
 - **Nekomata (this repo):** reader, analysis, emitter, runtime, primitive table, the
   `nekomata` host and the `neko`/`haxelib` launchers, tests.
-- **libhxcpp:** nothing at first. The Nekomata host is a cppia host of its own that
-  checks the magic and hands generated cppia to `cpp.cppia.Module.fromData`. Later,
-  a small hook lets the stock `Cppia` host run `.n` files, and neko-specific
-  expression nodes can replace runtime calls on hot paths once profiling says where.
+- **libhxcpp:** a script format hook, `__scriptable_cppia_register_format`. The
+  Nekomata host is a cppia host of its own that checks the magic and hands generated
+  cppia to `cpp.cppia.Module.fromString`. `nekomata.CppiaFormat` registers `NEKO` with
+  the hook instead, so `Module.fromData` translates neko modules, and the stock
+  `cpp.cppia.Host` built with it (`cppia.hxml`) runs `.n` files from its command line.
+  Later, neko-specific expression nodes can replace runtime calls on hot paths once
+  profiling says where.
 
 ## Milestones
 

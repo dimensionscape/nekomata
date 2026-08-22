@@ -1,0 +1,21 @@
+# The stock cppia host, cpp.cppia.Host, with Nekomata compiled in: libhxcpp's loader
+#  hands it .n modules through nekomata.CppiaFormat, so it runs them as it runs .cppia
+#  scripts: bin/cppia/Cppia [-jit] <file.n | file.cppia> [args...]
+# The flags are those of libhxcpp's project/compile-cppia.hxml, and what Nekomata's
+#  runtime needs
+-cp src
+--main cpp.cppia.Host
+nekomata.CppiaFormat
+# The runtime is only named by generated scripts, so nothing else pulls it in
+--macro include("nekomata.rt")
+-D scriptable
+-D dll_export=
+--dce no
+-D HXCPP_CATCH_SEGV
+-D hxcpp_smart_strings
+# Neko reports where an uncaught exception came from, and $callstack and $excstack
+#  read the stack, so script frames keep their file and line
+-D HXCPP_STACK_TRACE
+-D HXCPP_STACK_LINE
+-D HAXE_OUTPUT_FILE=Cppia
+--cpp bin/cppia
