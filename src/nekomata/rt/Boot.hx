@@ -43,9 +43,24 @@ class Boot {
 		return m;
 	}
 
+	// The program, when a host that knows nothing of neko runs it, as the stock cppia
+	//  host runs the module on its command line. An exception it lets out ends the
+	//  program as neko's main ends it, where the nekomata host's main does that itself
+	public static var program:NModule;
+
 	public static function run(m:NModule, globals:Array<Dynamic>, body:Dynamic):Void {
 		m.globals = globals;
-		Rt.finish(body(null, null));
+		if (m != program) {
+			Rt.finish(body(null, null));
+			return;
+		}
+		try {
+			Rt.finish(body(null, null));
+		} catch (e:Dynamic) {
+			var report = NekoStack.report(e);
+			Sys.stderr().writeBytes(report, 0, report.length);
+			Sys.exit(1);
+		}
 	}
 
 	public static function loader(m:NModule):NObject

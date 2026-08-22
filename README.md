@@ -42,6 +42,16 @@ haxe build.hxml
 Then `bin/host/nekomata path/to/module.n` runs a module, `-jit` turns on cppia's JIT,
 and `--emit out.cppia` saves the generated cppia.
 
+```bash
+haxe cppia.hxml
+```
+
+builds libhxcpp's stock cppia host, `cpp.cppia.Host`, with Nekomata compiled in. It
+registers neko bytecode with libhxcpp's script format hook, so
+`bin/cppia/Cppia [-jit] path/to/module.n [args...]` runs a module as the same command
+runs a `.cppia` script, and `cpp.cppia.Module.fromData` loads one. It needs a libhxcpp
+with the hook.
+
 ## Trying it
 
 These run under Haxe's interpreter, with no native build:
@@ -59,7 +69,8 @@ source positions and the names of globals, fields and builtins.
 test/run.sh
 ```
 
-builds the programs in `test/hello` and checks that the host prints what neko prints;
+builds the programs in `test/hello` and checks that the host, and the stock cppia host
+once `cppia.hxml` has built it, print what neko prints;
 
 ```bash
 haxe test.hxml path/to/dir-or-file.n
