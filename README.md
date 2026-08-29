@@ -76,10 +76,18 @@ once `cppia.hxml` has built it, print what neko prints;
 haxe test.hxml path/to/dir-or-file.n
 ```
 
-reads, stack-checks and translates every `.n` file under the paths given; and
+reads, stack-checks and translates every `.n` file under the paths given;
 
 ```bash
 test/nekoc-compare.sh path/to/file.n
 ```
 
-compares the decoded instructions against `nekoc -d` (needs neko installed).
+compares the decoded instructions against `nekoc -d` (needs neko installed); and
+
+```bash
+test/ndll/run.sh
+```
+
+builds a CFFI ndll with hxcpp and checks that programs loading it, libhxcpp's own CFFI
+tests and, with lime installed, calls into lime.ndll print on the host what they print
+on neko.

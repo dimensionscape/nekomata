@@ -75,9 +75,12 @@ Milestones 1 to 3 are done, with most of 4, 5 and 6:
   `version`, `list`, `path`, `run` and `install` print what they print on neko, and
   haxelib's `info` reads lib.haxe.org over HTTPS. `nekomata boot` writes executables in
   `nekotools boot`'s format, and runs those nekotools writes.
+- Ndlls built with hxcpp's CFFI load (`test/ndll/run.sh`): libhxcpp's test/cffi suite and
+  a test library of Nekomata's own give the same results as on neko, and lime's `svg.n`
+  renders an icon through lime.ndll's cairo to the same PNG bytes.
 
 Left: `hxcpp.n` building libhxcpp itself and bigger projects (milestone 4), a `haxelib`
-executable that needs no neko install (5), native extensions (7) and speed (8).
+executable that needs no neko install (5), ndlls built against libneko (7) and speed (8).
 
 ## Test corpus
 
@@ -130,6 +133,138 @@ Neko is the oracle: every check runs the same module on neko and on the host.
   should be fixed too.
 - `$excstack` is recorded when a value is raised and cut at the catching function, as
   neko's is; hxcpp's own record of an unwind holds no frame of the function that caught.
+
+## Notes from milestone 7
+
+Third-party ndlls come in two kinds. Those built with hxcpp's CFFI (`hx/CFFI.h`) find
+their API at run time from the host that loaded them, so one binary runs on neko and on
+hxcpp. Those built against libneko link to neko.dll or libneko.so and read neko's value
+layout through its macros. Of the installed haxelibs, only lime ships ndlls (`lime.ndll`
+for Windows, Windows64, Linux64, Mac64 and MacArm64), which its `tools.n` and `svg.n`
+load. They are of the first kind, built with neko's glue (`NEKO_COMPATIBLE`): they export
+`hx_set_loader` and `neko_init__5`, import nothing from neko.dll, and look for it with
+`GetModuleHandle` when neko loads them. The only ndlls of the second kind here are neko's
+own: std, regexp, zlib, ssl, sqlite, ui, mysql, mysql5 and mod_neko2.
+
+- `prims/Ndll.hx` serves CFFI ndlls: a primitive no built-in library has comes from
+  `lib.ndll` found along the loader's path, loaded by libhxcpp, which hands it hxcpp's
+  API. A library that does not load or lacks the primitive fails as `loadprim` returns,
+  as on neko, which lime's search for its ndll relies on; neko's own libraries keep
+  failing only when a missing primitive is called. A library without `hx_set_loader` is
+  refused, as it needs libneko.
+- Values convert at the boundary the way Haxe's neko values map onto its hxcpp ones: a
+  Haxe String object becomes a String, a neko string the byte array a BytesData is on
+  hxcpp (and so a CFFI buffer, ending in a NUL for `val_string`), a float a Float.
+  Objects, arrays and functions go over as proxies that read, write and call the neko
+  value itself, so an ndll that keeps a callback or fills in an object later reaches
+  neko code. Results are built as neko's glue builds them, with the String and Array
+  constructors the program gave `neko_init`, which is recorded and not called, since
+  the glue it sets up needs neko.dll.
+- What hxcpp's API cannot give as neko's glue does: a float with a small integral value
+  comes back an int, as hxcpp boxes it; a primitive returning a C NULL, which neko
+  raises as an error, gives null, as `alloc_null()` is NULL too; a neko string is an
+  array to `val_type`, and `val_strlen` measures its printed form; `val_array_push` on a
+  Haxe Array does nothing, and `val_array_int` and the like give NULL, as on neko; an
+  object the ndll makes is copied into an NObject, so writes it makes to it later are
+  lost; an abstract freed with `free_abstract` reads as null to `$typeof`; a function
+  read from an object field is called with that object as `this`. The loader finds only
+  files on disk, where neko's `dlopen` also searches the system's path, and keeps one
+  list of libraries for the process, where neko keeps one per loader.
+- libhxcpp: `__hxcpp_get_proc_address` asked to fail quietly calls the primitive's query
+  function even when the symbol is missing, a null pointer (src/hx/Lib.cpp), so Ndll
+  asks for the query function and calls it itself. hxcpp's neko glue
+  (include/hx/NekoFunc.h) reads value tags with neko 1.8's 3 bits where neko 2 has 4, so
+  on neko 2 plain neko strings and arrays come out twice their length (an ndll summing a
+  neko array reads past it). Haxe programs pass Strings and Arrays as objects with a
+  `length` field and never see it. Without `neko_init`, the glue's `alloc_bool` and
+  `alloc_null` return C NULLs, which neko crashes printing.
+
+## The libneko shim
+
+Ndlls of the second kind need a library that is libneko to them and Nekomata's runtime
+behind it. Nekomata serves neko's own std, regexp, zlib, ssl and sqlite in Haxe, so the
+shim is for third-party ndlls (none are installed here) and neko's ui, mysql and
+mod_neko.
+
+What it exports. An ndll imports `neko.dll`, `libneko.so.2` or `libneko.2.dylib` by name,
+so the shim is a library of that name next to the host, which loads it by full path
+before the first such ndll: on Windows an import whose module name is already loaded
+binds to it, elsewhere the soname or install name does, so an installed neko's libneko
+is never the one used. neko.dll exports 88 names; neko's 9 libraries import 75 of them
+(std 65, mod_neko2 40, mysql and mysql5 24, sqlite 20, regexp 19, ssl 17, zlib 15, ui
+6). Three are data, not functions: `val_null`, `val_true` and `val_false`, which every
+library imports, as `alloc_bool` and `val_is_null` are macros comparing against them.
+The core, used by 5 or more of them: `val_id`, `alloc_string`, `alloc_empty_string`,
+`alloc_buffer`, `buffer_append`, `buffer_to_string`, `val_buffer`, `alloc_object`,
+`alloc_field`, `val_field`, `alloc_abstract`, `val_gc`, `val_throw`, `_neko_failure`,
+`alloc_array`, `alloc_int32`, `alloc` and `val_call1`, with `alloc_float`,
+`alloc_private`, `copy_string` and `buffer_append_sub` in 4. Most of the rest only std
+and mod_neko use:
+`vm_*`, locks, threads and thread locals, `gc_*`, `read_module`, `vm_execute`,
+`default_loader`, `select_file`, `exc_stack`, `call_stack`, `val_print`,
+`val_compare`, `val_iter_fields`, `kind_share`, `kind_lookup`, `k_hash`,
+`kind_module`. `val_this` is a function, so no macro reads the VM's struct.
+
+What neko's macros fix. Most of the API is macros that read value memory directly, so a
+value an ndll sees must be laid out as neko 2 lays it out (vm/neko.h):
+
+- `value` is a pointer. An int is the odd word `(i << 1) | 1`, 31 bits; wider ints are
+  boxed `{VAL_INT32 = 8, int}`.
+- Every other value points at a 32-bit tag: the type in the low `NEKO_TAG_BITS` = 4
+  bits, the length of a string or array above them (at most 2^28 - 1). hxcpp's glue has
+  3 bits, neko 1.8's layout, hence its doubled lengths on neko 2.
+- A float is `{tag, double}` packed to 4 bytes; a string's bytes follow its tag and end
+  in a NUL, and `val_string` points into the value, which ndlls write through (an
+  `alloc_empty_string` then filled); an array's slots follow its tag, read and written
+  through `val_array_ptr`; an abstract is `{tag, kind, data}` with `val_kind` and
+  `val_data` assignable; a function is `{tag, nargs, addr, env, module}`, read by
+  `val_fun_nargs`, its short tag 6 shared by `VAL_PRIMITIVE` (6 | 16) and `VAL_JITFUN`
+  (6 | 32). Objects are reached only through functions (`val_field`, `alloc_field`,
+  `val_iter_fields`, `val_ocall*`), so their insides are the shim's to choose.
+- `neko_error()` is `return NULL`: a primitive returning NULL raises its own name. An
+  exception is a `longjmp` out of the ndll's C frames, which have nothing to unwind.
+
+How it fits. Nekomata's values are hxcpp objects, a vtable first, so none can be handed
+to an ndll as it is. The shim keeps neko values of its own and Nekomata converts at the
+call, as Ndll does for CFFI:
+
+- The heap is neko's: Boehm's collector, which neko links, and neko's own vm/alloc.c,
+  objtable.c, hash.c, callback.c, threads.c and the parts of others.c with buffers,
+  failures, `val_print` and `val_compare` (MIT), with interp.c and load.c replaced by
+  calls into Nekomata. Ndlls keep values in blocks from `alloc()`, in their static data
+  and in roots, and rely on the collector finding them, which Boehm does for the data
+  of every loaded library. hxcpp's collector accepts pointers up to 8 words into an
+  object (`RegisterVTableOffset` raises that), so neko values could live in hxcpp
+  objects, but it scans only thread stacks, roots and what objects mark, never an
+  ndll's data or blocks. A thread registers with Boehm (`GC_register_my_thread`)
+  before its first call into such an ndll, as its stack then holds neko values.
+- Ints, floats, bools, null and int32 go by value. Strings are copied in, and back out
+  when the ndll wrote to them; arrays are copied in and their slots copied back after
+  the call.
+- An NObject passed in gets a neko object standing for it, whose fields `val_field`,
+  `alloc_field` and `val_iter_fields` read and write on the NObject itself, so writes
+  made later reach neko code, as with Ndll's proxies. Objects the ndll makes come back
+  as NObjects, their field names taken from `val_id` so they print.
+- An NFunction gets a neko function whose `addr` is a trampoline into Nekomata, with its
+  `nargs`; functions the ndll makes (`alloc_function`) come back as NFunctions calling
+  the C address through the same conversion, with `this` for `val_this`.
+- Abstracts stay in the neko heap. Nekomata holds an NAbstract whose data is the neko
+  pointer, rooted until the NAbstract's hxcpp finalizer drops the root and lets Boehm
+  run the ndll's `val_gc` finalizer; one NAbstract per pointer keeps `==` physical.
+- Each NObject, array and NFunction keeps one stand-in while the ndll may hold it, in a
+  map rooted on the neko side and weak on Nekomata's, so a value the ndll keeps and
+  hands back is the same value.
+- The call boundary `setjmp`s; `val_throw` and `_neko_failure` `longjmp` to it, and
+  Nekomata raises the converted value. A Nekomata exception in a callback is caught in
+  the trampoline and raised into the ndll by `longjmp`, as a C++ exception must not
+  cross C frames built without unwind tables; `val_callEx` with an `exc` pointer gets it
+  there instead.
+- Ndll.find already finds the file and tells the kinds apart. For the second it would
+  load the shim, `dlopen` the ndll, call `__neko_entry_point` and look up `name__N` as
+  neko does, without libhxcpp.
+
+Order of work: the core and buffers first, which cover libraries like regexp, zlib and
+sqlite; the VM functions with a library that needs them (mod_neko, ui).
 
 ## Open questions
 

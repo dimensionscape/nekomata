@@ -166,6 +166,7 @@ class NekoLoader {
 		if (n >= 10 || n < -1)
 			return Rt.error("loadprim");
 		var f = Primitives.find(name, n);
+		if (f == null) f = nekomata.rt.prims.Ndll.find(th, name, n);
 		if (f != null)
 			return NekoStats.enabled && n <= 6 ? NekoStats.wrap(f) : f;
 		if (trace)
