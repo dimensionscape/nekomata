@@ -5,11 +5,15 @@ import nekomata.rt.Values;
 // What a translated module's main calls to set itself up and run its body
 @:keep
 @:cppFileCode('
-// libhxcpp gives each thread a fixed 128K stack for script frames, a few hundred
-//  translated neko calls deep. Neko grows its stack to 256K values, so a thread swaps
-//  in a bigger one before its first script frame. The GC scans only the used part
+// Neko grows its stack to 256K values, far deeper than the 128K libhxcpp gives the
+//  script frames of each thread by default. A libhxcpp that can size it does so: reserved,
+//  committed as frames reach it. An older one gets a bigger buffer swapped in before
+//  the first script frame of the thread. The GC scans only the used part either way
 static void nk_grow_script_stack(int inSize)
 {
+   #ifdef HXCPP_CPPIA_STACK_SIZE_API
+   __scriptable_cppia_set_stack_size(inSize);
+   #else
    hx::StackContext *ctx = hx::StackContext::getCurrent();
    if (ctx->pointer != ctx->frame || ctx->frame != ctx->stack + sizeof(hx::Object *))
       return;
@@ -20,6 +24,7 @@ static void nk_grow_script_stack(int inSize)
    ctx->push((hx::Object *)0);
    ctx->frame = ctx->pointer;
    delete [] old;
+   #endif
 }
 ')
 class Boot {
