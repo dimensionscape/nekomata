@@ -1,0 +1,14 @@
+<xml>
+   <!-- The test ndll: haxelib run hxcpp Build.xml (with -DHXCPP_M64 for 64-bit neko) -->
+   <include name="${HXCPP}/toolchain/haxe-target.xml"/>
+
+   <files id="ndlltest">
+      <depend files="hxcpp-depends"/>
+      <file name="NdllTest.cpp" />
+   </files>
+
+   <target id="default" output="${LIBPREFIX}ndlltest${HX_TARGET_SUFFIX}" tool="linker" toolid="${STD_MODULE_LINK}">
+      <outdir name="${NDLLDIR}/${BINDIR}" />
+      <files id="ndlltest"/>
+   </target>
+</xml>

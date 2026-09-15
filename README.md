@@ -49,6 +49,16 @@ name, the JIT setting and the host's own sources. The cache is `nekomata/cache` 
 elsewhere; `NEKOMATA_CACHE` names another directory, or turns it off when set to
 `off`. `NEKOMATA_TIME=1` reports how long each module takes to translate and load.
 
+```bash
+haxe cppia.hxml
+```
+
+builds libhxcpp's stock cppia host, `cpp.cppia.Host`, with Nekomata compiled in. It
+registers neko bytecode with libhxcpp's script format hook, so
+`bin/cppia/Cppia [-jit] path/to/module.n [args...]` runs a module as the same command
+runs a `.cppia` script, and `cpp.cppia.Module.fromData` loads one. It needs a libhxcpp
+with the hook.
+
 ## Trying it
 
 These run under Haxe's interpreter, with no native build:
@@ -66,16 +76,25 @@ source positions and the names of globals, fields and builtins.
 test/run.sh
 ```
 
-builds the programs in `test/hello` and checks that the host prints what neko prints;
+builds the programs in `test/hello` and checks that the host, and the stock cppia host
+once `cppia.hxml` has built it, print what neko prints;
 
 ```bash
 haxe test.hxml path/to/dir-or-file.n
 ```
 
-reads, stack-checks and translates every `.n` file under the paths given; and
+reads, stack-checks and translates every `.n` file under the paths given;
 
 ```bash
 test/nekoc-compare.sh path/to/file.n
 ```
 
-compares the decoded instructions against `nekoc -d` (needs neko installed).
+compares the decoded instructions against `nekoc -d` (needs neko installed); and
+
+```bash
+test/ndll/run.sh
+```
+
+builds a CFFI ndll with hxcpp and checks that programs loading it, libhxcpp's own CFFI
+tests and, with lime installed, calls into lime.ndll print on the host what they print
+on neko.

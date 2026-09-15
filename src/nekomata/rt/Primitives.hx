@@ -33,6 +33,8 @@ class Primitives {
 		nekomata.rt.prims.StdSocket.register();
 		nekomata.rt.prims.Zlib.register();
 		nekomata.rt.prims.Ssl.register();
+		nekomata.rt.prims.StdModule.register();
+		nekomata.rt.prims.Sqlite.register();
 	}
 }
 

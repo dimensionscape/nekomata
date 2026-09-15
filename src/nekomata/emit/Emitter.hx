@@ -115,11 +115,22 @@ class Emitter {
 		return {name: name, id: nextVar++, type: type};
 
 	// hxcpp passes stack frames as class::method::file::line, and Haxe's debug info names
-	//  positions like Class::method, so the separator is escaped; NekoStack restores it
+	//  positions like Class::method, so the separator is escaped; NekoStack restores it.
+	//  hxcpp also drops the file of a frame whose file starts with ?, which neko's own
+	//  code without a position has, so such a file gets a marker in front
 	public static inline var COLONS = "::";
+	public static inline var UNKNOWN = "";
 
-	static function frameFile(file:String):String
-		return StringTools.replace(file, "::", COLONS);
+	static function frameFile(file:String):String {
+		var escaped = StringTools.replace(file, "::", COLONS);
+		return StringTools.startsWith(escaped, "?") ? UNKNOWN + escaped : escaped;
+	}
+
+	public static function unescapeFile(file:String):String {
+		if (StringTools.startsWith(file, UNKNOWN))
+			file = file.substr(UNKNOWN.length);
+		return StringTools.replace(file, COLONS, "::");
+	}
 
 	static function functionName(s:Scope):String
 		return s.global < 0 ? "body" : 'f${s.global}';

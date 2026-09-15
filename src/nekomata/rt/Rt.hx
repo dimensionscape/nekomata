@@ -596,10 +596,16 @@ class Rt {
 		return untyped __cpp__("((size_t){0}.mPtr > (size_t){1}.mPtr) ? 1 : -1", a, b);
 	}
 
+	// $hash and the Hash opcode record the name, as neko's val_id does, so $field and
+	//  error messages can name the field later
 	public static function hash(v:Dynamic):Int {
 		if (!isString(v))
 			error("$hash");
-		return nekomata.neko.Hash.field(bytes(v).toString());
+		var name = bytes(v).toString();
+		var h = nekomata.neko.Hash.field(name);
+		if (!names.exists(h))
+			names.set(h, name);
+		return h;
 	}
 
 	// -- Objects, fields and arrays --
@@ -639,6 +645,10 @@ class Rt {
 			names.set(nekomata.neko.Hash.field(s), s);
 		}
 	}
+
+	// The name some module declared or $hash recorded for a field, or null
+	public static inline function knownFieldName(h:Int):Null<String>
+		return names.get(h);
 
 	public static function fieldName(h:Int):String {
 		var n = names.get(h);
@@ -984,8 +994,12 @@ class Rt {
 		}
 	}
 
+	// Neko's printer writes and flushes at once, so output keeps its order with what
+	//  a child process prints
 	public static function print(v:Dynamic):Void {
 		var b = valueBytes(v);
-		Sys.stdout().writeBytes(b, 0, b.length);
+		var out = Sys.stdout();
+		out.writeBytes(b, 0, b.length);
+		out.flush();
 	}
 }

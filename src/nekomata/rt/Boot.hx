@@ -5,11 +5,15 @@ import nekomata.rt.Values;
 // What a translated module's main calls to set itself up and run its body
 @:keep
 @:cppFileCode('
-// libhxcpp gives each thread a fixed 128K stack for script frames, a few hundred
-//  translated neko calls deep. Neko grows its stack to 256K values, so a thread swaps
-//  in a bigger one before its first script frame. The GC scans only the used part
+// Neko grows its stack to 256K values, far deeper than the 128K libhxcpp gives the
+//  script frames of each thread by default. A libhxcpp that can size it does so: reserved,
+//  committed as frames reach it. An older one gets a bigger buffer swapped in before
+//  the first script frame of the thread. The GC scans only the used part either way
 static void nk_grow_script_stack(int inSize)
 {
+   #ifdef HXCPP_CPPIA_STACK_SIZE_API
+   __scriptable_cppia_set_stack_size(inSize);
+   #else
    hx::StackContext *ctx = hx::StackContext::getCurrent();
    if (ctx->pointer != ctx->frame || ctx->frame != ctx->stack + sizeof(hx::Object *))
       return;
@@ -20,6 +24,7 @@ static void nk_grow_script_stack(int inSize)
    ctx->push((hx::Object *)0);
    ctx->frame = ctx->pointer;
    delete [] old;
+   #endif
 }
 ')
 class Boot {
@@ -43,9 +48,24 @@ class Boot {
 		return m;
 	}
 
+	// The program, when a host that knows nothing of neko runs it, as the stock cppia
+	//  host runs the module on its command line. An exception it lets out ends the
+	//  program as neko's main ends it, where the nekomata host's main does that itself
+	public static var program:NModule;
+
 	public static function run(m:NModule, globals:Array<Dynamic>, body:Dynamic):Void {
 		m.globals = globals;
-		Rt.finish(body(null, null));
+		if (m != program) {
+			Rt.finish(body(null, null));
+			return;
+		}
+		try {
+			Rt.finish(body(null, null));
+		} catch (e:Dynamic) {
+			var report = NekoStack.report(e);
+			Sys.stderr().writeBytes(report, 0, report.length);
+			Sys.exit(1);
+		}
 	}
 
 	public static function loader(m:NModule):NObject
