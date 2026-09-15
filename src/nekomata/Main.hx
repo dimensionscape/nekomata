@@ -203,7 +203,7 @@ class Main {
 			cppia = t.cppia;
 			t2 = haxe.Timer.stamp();
 			if (key != null)
-				Cache.put(key, cppia, t.classAt, cls.length);
+				Cache.put(key, cppia, t.classOffsets, cls.length);
 		}
 		if (emitTo != null) {
 			sys.io.File.saveBytes(emitTo, cppia);

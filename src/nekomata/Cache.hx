@@ -37,7 +37,7 @@ static void nk_hash128(const unsigned char *p, int n, unsigned long long *out)
 }
 ')
 class Cache {
-	static inline var MAGIC = "NKC1";
+	static inline var MAGIC = "NKC2";
 
 	static var dir:Null<String> = findDir();
 	static final sources = nekomata.build.SourceHash.get();
@@ -71,8 +71,11 @@ class Cache {
 	static function path(key:String):String
 		return dir + "/" + key + ".cppia";
 
-	// The cached cppia for key with the module class renamed to cls, or null. The name
-	//  takes the place of the one the entry was written with, which is as long
+	// An entry: the magic, how many class names the cppia has and how long their common
+	//  start is, where each is, then the cppia
+
+	// The cached cppia for key with its classes renamed to start with cls, or null. cls
+	//  takes the place of the start the entry was written with, which is as long
 	public static function get(key:String, cls:String):Null<Bytes> {
 		try {
 			var p = path(key);
@@ -81,30 +84,39 @@ class Cache {
 			var data = sys.io.File.getBytes(p);
 			if (data.length < 12 || data.getString(0, 4) != MAGIC)
 				return null;
-			var at = data.getInt32(4), len = data.getInt32(8);
+			var count = data.getInt32(4), len = data.getInt32(8);
+			var start = 12 + 4 * count;
 			var name = Bytes.ofString(cls);
-			if (name.length != len || at < 0 || 12 + at + len > data.length)
+			if (count < 0 || name.length != len || start > data.length)
 				return null;
-			var cppia = data.sub(12, data.length - 12);
-			cppia.blit(at, name, 0, len);
+			var cppia = data.sub(start, data.length - start);
+			for (i in 0...count) {
+				var at = data.getInt32(12 + 4 * i);
+				if (at < 0 || at + len > cppia.length)
+					return null;
+				cppia.blit(at, name, 0, len);
+			}
 			return cppia;
 		} catch (e:Dynamic) {
 			return null;
 		}
 	}
 
-	// Keeps cppia for key, where the module class's name is len bytes at classAt. Each
-	//  entry is written whole under another name and then renamed, so another process
-	//  never reads half of one
-	public static function put(key:String, cppia:Bytes, classAt:Int, len:Int):Void {
+	// Keeps cppia for key, where the names of its classes start with len bytes, at
+	//  offsets. Each entry is written whole under another name and then renamed, so
+	//  another process never reads half of one
+	public static function put(key:String, cppia:Bytes, offsets:Array<Int>, len:Int):Void {
 		try {
 			if (!sys.FileSystem.exists(dir))
 				sys.FileSystem.createDirectory(dir);
-			var data = Bytes.alloc(12 + cppia.length);
+			var start = 12 + 4 * offsets.length;
+			var data = Bytes.alloc(start + cppia.length);
 			data.blit(0, Bytes.ofString(MAGIC), 0, 4);
-			data.setInt32(4, classAt);
+			data.setInt32(4, offsets.length);
 			data.setInt32(8, len);
-			data.blit(12, cppia, 0, cppia.length);
+			for (i in 0...offsets.length)
+				data.setInt32(12 + 4 * i, offsets[i]);
+			data.blit(start, cppia, 0, cppia.length);
 			var p = path(key);
 			var tmp = p + "." + Std.random(0x7FFFFFFF) + ".tmp";
 			sys.io.File.saveBytes(tmp, data);

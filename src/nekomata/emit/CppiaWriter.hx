@@ -52,9 +52,9 @@ class CppiaWriter {
 	var typeIds = new Map<String, Int>();
 	var out = new Out();
 	var classCount = 0;
-	var className:String;
-	// Where the name of the class written last is in the bytes toBytes gives
-	public var classAt(default, null) = -1;
+	var classNames:Array<String> = [];
+	// Where the names of the classes are in the bytes toBytes gives
+	public var classOffsets(default, null):Array<Int> = [];
 	var file = 0;
 	var line = 0;
 	var arrayType:Int;
@@ -98,7 +98,7 @@ class CppiaWriter {
 
 	public function beginClass(name:String, fieldCount:Int) {
 		classCount++;
-		className = name;
+		classNames.push(name);
 		w("CLASS ");
 		wi(typeId(name));
 		w("0 0\n");
@@ -302,8 +302,8 @@ class CppiaWriter {
 			var b = Bytes.ofString(t);
 			head.int(b.length);
 			head.byte(" ".code);
-			if (t == className)
-				classAt = head.length;
+			if (classNames.indexOf(t) >= 0)
+				classOffsets.push(head.length);
 			head.bytes(b);
 			head.byte("\n".code);
 		}

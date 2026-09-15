@@ -96,11 +96,12 @@ class Emitter {
 	public static function emit(m:Module, cls:String, name = "module", jit = false):haxe.io.Bytes
 		return translate(m, cls, name, jit).cppia;
 
-	// The cppia, and where in it the class name is, so a copy can be renamed
-	public static function translate(m:Module, cls:String, name = "module", jit = false):{cppia:haxe.io.Bytes, classAt:Int} {
+	// The cppia, and where in it the class names are, so a copy can be renamed: each
+	//  starts with cls
+	public static function translate(m:Module, cls:String, name = "module", jit = false):{cppia:haxe.io.Bytes, classOffsets:Array<Int>} {
 		var e = new Emitter(m, cls, name, jit);
 		var cppia = e.run();
-		return {cppia: cppia, classAt: e.w.classAt};
+		return {cppia: cppia, classOffsets: e.w.classOffsets};
 	}
 
 	function new(m:Module, cls:String, name:String, jit:Bool) {
@@ -132,18 +133,40 @@ class Emitter {
 		return StringTools.replace(file, COLONS, "::");
 	}
 
+	static inline var CHUNK = 256;
+
+	// The class of each module function, by global
+	var classOf = new Map<Int, String>();
+
+	function chunkClass(k:Int):String
+		return k == 0 ? cls : cls + "_" + k;
+
 	static function functionName(s:Scope):String
 		return s.global < 0 ? "body" : 'f${s.global}';
 
 	function run():haxe.io.Bytes {
 		scopes = StackCheck.run(m);
 		analyse();
-		w.beginClass(cls, scopes.length + 3);
-		w.staticVar("G", CppiaWriter.ARRAY);
-		w.staticVar("M", CppiaWriter.DYNAMIC);
-		w.staticVar("B", CppiaWriter.ARRAY);
-		for (s in scopes)
-			writeFunction(s);
+		// cppia finds a static function by looking through its class's functions one
+		//  by one, so the functions go in classes of CHUNK at most, the first with the
+		//  module's statics
+		for (k in 0...scopes.length)
+			if (scopes[k].global >= 0)
+				classOf.set(scopes[k].global, chunkClass(Std.int(k / CHUNK)));
+		var k = 0;
+		while (k < scopes.length) {
+			var n = scopes.length - k < CHUNK ? scopes.length - k : CHUNK;
+			if (k == 0) {
+				w.beginClass(cls, n + 3);
+				w.staticVar("G", CppiaWriter.ARRAY);
+				w.staticVar("M", CppiaWriter.DYNAMIC);
+				w.staticVar("B", CppiaWriter.ARRAY);
+			} else
+				w.beginClass(chunkClass(Std.int(k / CHUNK)), n);
+			for (i in k...k + n)
+				writeFunction(scopes[i]);
+			k += n;
+		}
 		gLocal = null;
 		w.main(mainExpr());
 		return w.toBytes();
@@ -299,7 +322,7 @@ class Emitter {
 		for (i in 0...m.globals.length)
 			items.push(switch m.globals[i] {
 				case GFunction(_, nargs):
-					call("func", [EStatic(cls, 'f$i'), EInt(nargs), moduleRef(), EInt(i)]);
+					call("func", [EStatic(classOf.get(i), 'f$i'), EInt(nargs), moduleRef(), EInt(i)]);
 				case GString(b):
 					call("stringOf", [EString(b.toHex())]);
 				case GFloat(text):
@@ -1091,7 +1114,7 @@ class Emitter {
 	// A call of the module's function in global f, straight to its static function. It
 	//  is the function value with no environment, as AccGlobal gives it
 	function directCall(f:Int, args:Array<E>):E {
-		var e = ECallStatic(cls, 'f$f', [v(th), ENull].concat(args));
+		var e = ECallStatic(classOf.get(f), 'f$f', [v(th), ENull].concat(args));
 		return mayTail.exists(f) ? call("finish", [e]) : e;
 	}
 
