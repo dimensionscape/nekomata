@@ -390,17 +390,6 @@ class Emitter {
 		}
 		cases.sort((a, b) -> a.value - b.value);
 
-		var body:Array<E> = [EDecl(acc, ENull)];
-		if (usesG)
-			body.push(EDecl(gLocal, EStatic(cls, "G")));
-		if (usesB)
-			body.push(EDecl(bLocal, EStatic(cls, "B")));
-		for (i in nargs...slots.length)
-			body.push(EDecl(slots[i], ENull));
-		body.push(EDecl(pc, EInt(s.entry)));
-		if (hasTraps)
-			body.push(EDecl(traps, EArrayDef([])));
-
 		var dispatch = EWhile(EBool(true), cases.length == 1 ? cases[0].body : switchOn(cases));
 		if (hasTraps) {
 			var ex = local("e");
@@ -413,12 +402,64 @@ class Emitter {
 			]);
 			dispatch = EWhile(EBool(true), ETry(EWhile(EBool(true), switchOn(cases)), ex, handler));
 		}
+		// Only the locals the code uses are declared: one with no value to start with
+		//  starts as null, as the slots and the accumulator do
+		markUsed(dispatch);
+		var decls:Array<{v:Local, init:Null<E>}> = [];
+		inline function declare(l:Local, init:Null<E>)
+			if (usedAt[l.id] == stamp)
+				decls.push({v: l, init: init});
+		declare(acc, null);
+		if (usesG)
+			decls.push({v: gLocal, init: EStatic(cls, "G")});
+		if (usesB)
+			decls.push({v: bLocal, init: EStatic(cls, "B")});
+		for (i in nargs...slots.length)
+			declare(slots[i], null);
+		declare(pc, EInt(s.entry));
+		if (hasTraps)
+			decls.push({v: traps, init: EArrayDef([])});
+		var body:Array<E> = decls.length > 0 ? [EVars(decls)] : [];
 		body.push(dispatch);
 		body.push(EReturn(ENull));
 
 		var args = [th, env].concat(slots.slice(0, nargs));
 		var pos = m.positions != null && s.entry < m.positions.length ? m.positions[s.entry] : null;
 		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body), fileId(pos), pos == null ? s.entry : pos.line);
+	}
+
+	// The function each local was last seen used in, by id
+	var usedAt:Array<Int> = [];
+
+	function markUsed(e:E) {
+		switch e {
+			case EVar(id):
+				usedAt[id] = stamp;
+			case EBlock(es) | ECallStatic(_, _, es) | EArrayDef(es):
+				for (x in es)
+					markUsed(x);
+			case ESet(a, b) | EArrayI(a, b) | EIf(a, b) | EWhile(a, b) | ELess(a, b):
+				markUsed(a);
+				markUsed(b);
+			case EIfElse(a, b, c):
+				markUsed(a);
+				markUsed(b);
+				markUsed(c);
+			case ESwitch(c, cases):
+				markUsed(c);
+				for (x in cases)
+					markUsed(x.body);
+			case ETry(body, _, handler):
+				markUsed(body);
+				markUsed(handler);
+			case EReturn(x) | EThrow(x) | ENot(x) | EIsNull(x) | ENotNull(x) | EPos(_, _, x) | EDecl(_, x):
+				markUsed(x);
+			case EVars(vars):
+				for (d in vars)
+					if (d.init != null)
+						markUsed(d.init);
+			case EInt(_) | EString(_) | EBool(_) | ENull | EStatic(_, _) | EContinue:
+		}
 	}
 
 	// The switch over the blocks; under the JIT, which tests cases one by one, a large

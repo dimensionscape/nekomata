@@ -24,6 +24,8 @@ enum E {
 	EThrow(e:E);
 	EContinue;
 	EDecl(v:Local, init:E);
+	// Locals declared together: with no init, a local starts as null, or 0 for an int
+	EVars(vars:Array<{v:Local, init:Null<E>}>);
 	ENot(e:E);
 	EIsNull(e:E);
 	ENotNull(e:E);
@@ -260,6 +262,23 @@ class CppiaWriter {
 				expr(value);
 			case EContinue:
 				w("CONTINUE\n");
+			case EVars(vars):
+				w("TVARS ");
+				wi(vars.length);
+				w("\n");
+				for (d in vars) {
+					if (d.init == null) {
+						w("VARDECL ");
+						local(d.v);
+						w("\n");
+					} else {
+						w("VARDECLI ");
+						local(d.v);
+						wi(typeId(d.v.type));
+						w("\n");
+						expr(d.init);
+					}
+				}
 			case EDecl(v, init):
 				w("TVARS 1\nVARDECLI ");
 				local(v);
