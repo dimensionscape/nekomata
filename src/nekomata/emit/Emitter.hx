@@ -383,9 +383,22 @@ class Emitter {
 				if (b.reached && !b.inlined && !done.exists(b.start)) {
 					done.set(b.start, true);
 					more = true;
+					// A block that goes back to itself, a loop's head, runs in a loop of
+					//  its own, so going round is a continue rather than a trip through
+					//  the switch; it is written again once that is known
+					caseHead = b.start;
+					wrapped = false;
+					selfJump = false;
 					var out = [];
 					chain(b, new State(slots.length), out, 0);
-					cases.push({value: b.start, body: EBlock(out)});
+					if (selfJump) {
+						wrapped = true;
+						out = [];
+						chain(b, new State(slots.length), out, 0);
+					}
+					wrapped = false;
+					caseHead = -1;
+					cases.push({value: b.start, body: selfJump ? EWhile(EBool(true), EBlock(out)) : EBlock(out)});
 				}
 		}
 		cases.sort((a, b) -> a.value - b.value);
@@ -458,7 +471,7 @@ class Emitter {
 				for (d in vars)
 					if (d.init != null)
 						markUsed(d.init);
-			case EInt(_) | EString(_) | EBool(_) | ENull | EStatic(_, _) | EContinue:
+			case EInt(_) | EString(_) | EBool(_) | ENull | EStatic(_, _) | EContinue | EBreak:
 		}
 	}
 
@@ -704,8 +717,27 @@ class Emitter {
 		}
 		b.inlined = false;
 		flush(st, out, scope.depth.get(t), b.accIn);
+		jumpTo(t, out);
+	}
+
+	// The switch's case being written, whether it loops on its own, and whether it
+	//  goes back to itself
+	var caseHead = -1;
+	var wrapped = false;
+	var selfJump = false;
+
+	// Goes to the case at t, with the state in locals: round the case's own loop when
+	//  t is its head, else out of it to the switch
+	function jumpTo(t:Int, out:Array<E>) {
+		if (t == caseHead) {
+			selfJump = true;
+			if (wrapped) {
+				out.push(EContinue);
+				return;
+			}
+		}
 		out.push(set(pc, EInt(t)));
-		out.push(EContinue);
+		out.push(wrapped ? EBreak : EContinue);
 	}
 
 	// Puts the state in locals: the slots below depth, and the accumulator when it is read
@@ -1117,7 +1149,7 @@ class Emitter {
 						materializeSlot(st, k, out);
 				materializeAcc(st, out);
 				out.push(EPos(pos.file, pos.line, set(pc, call("tableTarget", [v(acc), EInt(param), EInt(p)]))));
-				out.push(EContinue);
+				out.push(wrapped ? EBreak : EContinue);
 				return true;
 			case Apply:
 				var args = top(st, d, param);
@@ -1182,8 +1214,7 @@ class Emitter {
 					loop.push(ESet(v(slots[i]), value.e));
 			}
 			flush(ls, loop, n, blockAt[scope.entry].accIn);
-			loop.push(set(pc, EInt(scope.entry)));
-			loop.push(EContinue);
+			jumpTo(scope.entry, loop);
 			if (known) {
 				out.push(EPos(pos.file, pos.line, EBlock(loop)));
 				return;

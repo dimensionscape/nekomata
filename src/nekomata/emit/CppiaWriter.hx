@@ -23,6 +23,7 @@ enum E {
 	EReturn(e:E);
 	EThrow(e:E);
 	EContinue;
+	EBreak;
 	EDecl(v:Local, init:E);
 	// Locals declared together: with no init, a local starts as null, or 0 for an int
 	EVars(vars:Array<{v:Local, init:Null<E>}>);
@@ -260,6 +261,8 @@ class CppiaWriter {
 			case EThrow(value):
 				w("THROW\n");
 				expr(value);
+			case EBreak:
+				w("BREAK\n");
 			case EContinue:
 				w("CONTINUE\n");
 			case EVars(vars):
