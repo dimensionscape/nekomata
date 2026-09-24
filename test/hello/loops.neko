@@ -1,6 +1,6 @@
 // Loops with break and continue, a jump table, traps and a tail call inside them
-var out = $amake(0);
-var log = function(v) { out = $aconcat($array(out, $array(v))); };
+var o = { out => $amake(0) };
+var log = function(v) { o.out = $aconcat($array(o.out, $array(v))); };
 var i = 0;
 while( i < 20 ) {
 	i += 1;
@@ -41,4 +41,4 @@ do {
 	s += k;
 } while( k < 10 );
 log(s);
-$print(out, "\n");
+$print(o.out, "\n");
