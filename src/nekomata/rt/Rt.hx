@@ -69,6 +69,11 @@ class Rt {
 	}
 
 	// ObjCall of a field, o.f(args): the field as AccField reads it, called on o
+	// Whether a and b are the same object, as a guarded direct call checks the function
+	//  a field holds
+	public static inline function isValue(a:Dynamic, b:Dynamic):Bool
+		return untyped __cpp__("({0}.mPtr == {1}.mPtr)", a, b);
+
 	public static function method1(o:Dynamic, h:Int, a:Dynamic):Dynamic
 		return finish(enter1(field(o, h), o, a));
 

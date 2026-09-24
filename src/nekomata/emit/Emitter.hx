@@ -52,6 +52,10 @@ class Emitter {
 	var heldFunction:Array<Int>;
 	// Functions that can return a TailCall for their caller to make
 	var mayTail = new Map<Int, Bool>();
+	// The module function every SetField of a field hash stores, as Haxe's statics and
+	//  the methods on its prototypes are set: a call through such a field calls that
+	//  function's static function while the field still holds it
+	var fieldFunction = new Map<Int, Int>();
 	// Instructions some jump goes to
 	var targets:Array<Bool>;
 	// Per function, indexed by code index: the blocks, and marks set to the scope's entry
@@ -223,6 +227,17 @@ class Emitter {
 				for (p in s.pcs())
 					if (p < m.codeSize && m.op(p) == TailCall && !((m.param(p) & 7) == s.nargs && accFunction(p) == s.global))
 						mayTail.set(s.global, true);
+		var stores = new Map<Int, Int>();
+		for (s in scopes)
+			for (p in s.pcs())
+				if (p < m.codeSize && m.op(p) == SetField) {
+					var h = m.param(p), f = accFunction(p);
+					var had = stores.get(h);
+					stores.set(h, had == null || had == f ? f : -1);
+				}
+		for (h => f in stores)
+			if (f >= 0)
+				fieldFunction.set(h, f);
 	}
 
 	// The function an AccGlobal just before p, with no jump to p, puts in the
@@ -1045,7 +1060,22 @@ class Emitter {
 				var a = st.acc;
 				var h = a != null && a.kind == EFFECT && !(a.canThrow && a.line != pos.line) ? fieldOf(a.e, o) : null;
 				var e:E;
-				if (h != null) {
+				var known = h == null ? null : fieldFunction.get(h);
+				if (known != null && functionArgs(known) == param) {
+					// The field read into the accumulator's local, then a direct call of
+					//  the function the module stores there while it still holds it. The
+					//  arguments and o are constants or locals, so they read the same after
+					st.acc = null;
+					pos.takes(a);
+					writeLocal(st, acc, a.e, out, pos);
+					o = slotValue(st, d - 1);
+					args = top(st, d - 1, param);
+					var direct = ECallStatic(classOf.get(known), 'f$known', [o, ENull].concat(args));
+					if (mayTail.exists(known))
+						direct = call("finish", [direct]);
+					var cond = call("isValue", [v(acc), EArrayI(globals(), EInt(known))]);
+					e = EIfElse(cond, direct, call('call$param', [v(acc), o].concat(args)));
+				} else if (h != null) {
 					// o.f(args) in one call: the field read, then the call, as before
 					st.acc = null;
 					pos.takes(a);
