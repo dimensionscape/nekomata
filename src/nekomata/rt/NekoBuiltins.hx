@@ -123,6 +123,30 @@ class NekoBuiltins {
 		return a;
 	}
 
+	// $hget, $hset, $hmem and $hremove with no compare function, which run no neko code,
+	//  as the code calls them where they are used
+	@:noDebug public static function hgetNull(h:Dynamic, k:Dynamic):Dynamic {
+		var c = hash(h).find(k, null);
+		return c == null ? null : c.value;
+	}
+
+	@:noDebug public static function hsetNull(h:Dynamic, k:Dynamic, v:Dynamic):Bool {
+		var t = hash(h);
+		var c = t.find(k, null);
+		if (c != null) {
+			c.value = v;
+			return false;
+		}
+		t.add(k, v);
+		return true;
+	}
+
+	@:noDebug public static function hmemNull(h:Dynamic, k:Dynamic):Bool
+		return hash(h).find(k, null) != null;
+
+	@:noDebug public static function hremoveNull(h:Dynamic, k:Dynamic):Bool
+		return hash(h).remove(k, null);
+
 	@:noDebug public static function asize(a:Dynamic):Dynamic {
 		if (Rt.typeOf(a) != Rt.TARRAY)
 			Rt.error("$asize");
@@ -474,6 +498,16 @@ class NHash {
 	// Finds the binding for k, comparing keys with cmp, or with $compare when null
 	public function find(k:Dynamic, cmp:Null<(Dynamic, Dynamic) -> Bool>):Null<HCell> {
 		var c = cells[valHash(k) % ncells];
+		if (cmp == null && Rt.isInt(k)) {
+			// An int key equals only an int of the same value
+			var i:Int = k;
+			while (c != null) {
+				if (Rt.isInt(c.key) && (c.key : Int) == i)
+					return c;
+				c = c.next;
+			}
+			return null;
+		}
 		while (c != null) {
 			if (cmp == null ? Rt.compare(k, c.key) == 0 : cmp(k, c.key))
 				return c;
@@ -531,6 +565,16 @@ class NHash {
 	// Neko's val_hash (vm/hash.c), stable across runs: it reads the contents of
 	//  strings, floats, arrays and objects, and ignores functions and abstracts
 	public static function valHash(v:Dynamic):Int {
+		// The common keys, without the state hashRec needs for nested values
+		if (Rt.isInt(v))
+			return (v : Int) & 0x3FFFFFFF;
+		if (Std.isOfType(v, NString)) {
+			var b = (v : NString).b;
+			var h = 0, k = b.length;
+			while (k > 0)
+				h = h * 19 + signed(b.get(--k));
+			return h & 0x3FFFFFFF;
+		}
 		var h = new HashState();
 		hashRec(v, h, null);
 		return h.h & 0x3FFFFFFF;

@@ -89,6 +89,18 @@ class Emitter {
 			nekomata.neko.Hash.field(b.name) => {cls: b.cls, fn: b.fn, nargs: b.nargs, isBool: b.isBool, canThrow: b.canThrow}
 	];
 
+	// Hash builtins that run no neko code when their compare function, the last argument,
+	//  is null: called where they are used, without it
+	static final NULL_COMPARE_BUILTINS:Map<Int, {fn:String, nargs:Int, isBool:Bool}> = [
+		for (b in [
+			{name: "hget", fn: "hgetNull", nargs: 3, isBool: false},
+			{name: "hset", fn: "hsetNull", nargs: 4, isBool: true},
+			{name: "hmem", fn: "hmemNull", nargs: 3, isBool: true},
+			{name: "hremove", fn: "hremoveNull", nargs: 3, isBool: true}
+		])
+			nekomata.neko.Hash.field(b.name) => {fn: b.fn, nargs: b.nargs, isBool: b.isBool}
+	];
+
 	// How deep blocks written inline nest, at most, so the loader's recursion stays shallow
 	static inline var MAX_NEST = 100;
 	// The most cases one switch has under the JIT, which tests them one after another;
@@ -1041,7 +1053,12 @@ class Emitter {
 				var e:E;
 				var leaf = f != null && f.kind == CONST && f.builtin != 0 ? LEAF_BUILTINS.get(f.builtin) : null;
 				var isBool = false, canThrow = true;
-				if (leaf != null && leaf.nargs == param) {
+				var noCompare = f != null && f.kind == CONST && f.builtin != 0 ? NULL_COMPARE_BUILTINS.get(f.builtin) : null;
+				if (noCompare != null && noCompare.nargs == param && args[param - 1].match(ENull)) {
+					st.acc = null;
+					e = ECallStatic(BUILTINS, noCompare.fn, args.slice(0, param - 1));
+					isBool = noCompare.isBool;
+				} else if (leaf != null && leaf.nargs == param) {
 					// A builtin that runs no neko code, called where it is used
 					st.acc = null;
 					e = ECallStatic(leaf.cls, leaf.fn, args);
