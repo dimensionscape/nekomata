@@ -52,10 +52,12 @@ class Emitter {
 	var heldFunction:Array<Int>;
 	// Functions that can return a TailCall for their caller to make
 	var mayTail = new Map<Int, Bool>();
-	// The module function every SetField of a field hash stores, as Haxe's statics and
-	//  the methods on its prototypes are set: a call through such a field calls that
-	//  function's static function while the field still holds it
-	var fieldFunction = new Map<Int, Int>();
+	// The module functions the SetFields of a field hash store, as Haxe's statics and the
+	//  methods on its prototypes are set, when they are a few: a call through such a
+	//  field calls the static function of whichever of them the field holds
+	var fieldFunctions = new Map<Int, Array<Int>>();
+
+	static inline var MAX_FIELD_FUNCTIONS = 4;
 	// Instructions some jump goes to
 	var targets:Array<Bool>;
 	// Per function, indexed by code index: the blocks, and marks set to the scope's entry
@@ -239,17 +241,21 @@ class Emitter {
 				for (p in s.pcs())
 					if (p < m.codeSize && m.op(p) == TailCall && !((m.param(p) & 7) == s.nargs && accFunction(p) == s.global))
 						mayTail.set(s.global, true);
-		var stores = new Map<Int, Int>();
 		for (s in scopes)
 			for (p in s.pcs())
 				if (p < m.codeSize && m.op(p) == SetField) {
 					var h = m.param(p), f = accFunction(p);
-					var had = stores.get(h);
-					stores.set(h, had == null || had == f ? f : -1);
+					if (f < 0)
+						continue;
+					var fs = fieldFunctions.get(h);
+					if (fs == null)
+						fieldFunctions.set(h, fs = []);
+					if (fs.indexOf(f) < 0)
+						fs.push(f);
 				}
-		for (h => f in stores)
-			if (f >= 0)
-				fieldFunction.set(h, f);
+		for (h in fieldFunctions.keys())
+			if (fieldFunctions.get(h).length > MAX_FIELD_FUNCTIONS)
+				fieldFunctions.remove(h);
 	}
 
 	// The function an AccGlobal just before p, with no jump to p, puts in the
@@ -1077,8 +1083,10 @@ class Emitter {
 				var a = st.acc;
 				var h = a != null && a.kind == EFFECT && !(a.canThrow && a.line != pos.line) ? fieldOf(a.e, o) : null;
 				var e:E;
-				var known = h == null ? null : fieldFunction.get(h);
-				if (known != null && functionArgs(known) == param) {
+				var known = h == null ? null : fieldFunctions.get(h);
+				if (known != null)
+					known = [for (f in known) if (functionArgs(f) == param) f];
+				if (known != null && known.length > 0) {
 					// The field read into the accumulator's local, then a direct call of
 					//  the function the module stores there while it still holds it. The
 					//  arguments and o are constants or locals, so they read the same after
@@ -1087,11 +1095,15 @@ class Emitter {
 					writeLocal(st, acc, a.e, out, pos);
 					o = slotValue(st, d - 1);
 					args = top(st, d - 1, param);
-					var direct = ECallStatic(classOf.get(known), 'f$known', [o, ENull].concat(args));
-					if (mayTail.exists(known))
-						direct = call("finish", [direct]);
-					var cond = call("isValue", [v(acc), EArrayI(globals(), EInt(known))]);
-					e = EIfElse(cond, direct, call('call$param', [v(acc), o].concat(args)));
+					e = call('call$param', [v(acc), o].concat(args));
+					var i = known.length;
+					while (i-- > 0) {
+						var f = known[i];
+						var direct = ECallStatic(classOf.get(f), 'f$f', [o, ENull].concat(args));
+						if (mayTail.exists(f))
+							direct = call("finish", [direct]);
+						e = EIfElse(call("isValue", [v(acc), EArrayI(globals(), EInt(f))]), direct, e);
+					}
 				} else if (h != null) {
 					// o.f(args) in one call: the field read, then the call, as before
 					st.acc = null;
