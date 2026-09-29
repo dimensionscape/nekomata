@@ -32,12 +32,16 @@ class CppiaFormat {
 	static function __init__()
 		CppiaFormats.register("NEKO", translate);
 
-	static function emit(m:NModule, bytes:Bytes):String
-		return Emitter.emit(Reader.read(bytes), 'NekoModule${moduleCount++}', m.name);
+	// The translation for the JIT when it is on, whose switch is a chain of tests
+	static function emit(m:NModule, bytes:Bytes):Bytes {
+		var jit:Bool = untyped __cpp__("__scriptable_cppia_jit_active()");
+		var cls = "NekoModule" + StringTools.lpad(Std.string(moduleCount++), "0", 6);
+		return Emitter.emit(Reader.read(bytes), cls, m.name, jit);
+	}
 
 	// What NekoLoader runs for a module the program loads in turn
 	static function load(m:NModule, bytes:Bytes):() -> Void {
-		var module = cpp.cppia.Module.fromString(emit(m, bytes));
+		var module = cpp.cppia.Module.fromData(emit(m, bytes).getData());
 		module.boot();
 		return function() {
 			Boot.pending = m;
@@ -62,6 +66,7 @@ class CppiaFormat {
 			// Filled before any neko thread can look them up
 			nekomata.rt.NekoBuiltins.init();
 			nekomata.rt.Primitives.init();
+			Emitter.builtinExists = h -> nekomata.rt.NekoBuiltins.find(h) != null;
 			NekoLoader.translate = load;
 			loader = NekoLoader.create(args);
 		}
@@ -71,8 +76,8 @@ class CppiaFormat {
 		Rt.registerFields([file]);
 		cache.fields.set(nekomata.neko.Hash.field(file), nekomata.rt.prims.StdModule.handle(m));
 		Boot.program = m;
-		var text = emit(m, Bytes.ofData(script));
+		var cppia = emit(m, Bytes.ofData(script));
 		Boot.pending = m;
-		return text;
+		return cppia.getData();
 	}
 }

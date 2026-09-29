@@ -1,0 +1,44 @@
+// Loops with break and continue, a jump table, traps and a tail call inside them
+var o = { out => $amake(0) };
+var log = function(v) { o.out = $aconcat($array(o.out, $array(v))); };
+var i = 0;
+while( i < 20 ) {
+	i += 1;
+	if( i % 7 == 0 ) continue;
+	var j = 0;
+	while( true ) {
+		j += 1;
+		if( j > i % 5 ) break;
+		switch( j ) {
+		0 => log("zero")
+		1 => log(i * 10 + 1)
+		2 => log(i * 10 + 2)
+		3 => if( i % 2 == 0 ) log("even") else log("odd")
+		default => log(-j)
+		}
+	}
+	try {
+		if( i % 4 == 0 ) $throw(i);
+		log("ok");
+	} catch e {
+		log("caught");
+		log(e);
+	}
+	if( i > 17 ) break;
+}
+count = function(n, acc) {
+	if( n == 0 ) return acc;
+	var k = 0;
+	while( k < 3 ) { acc += k; k += 1; }
+	return count(n - 1, acc);
+}
+log(count(100, 0));
+var s = 0;
+var k = 0;
+do {
+	k += 1;
+	if( k == 3 ) continue;
+	s += k;
+} while( k < 10 );
+log(s);
+$print(o.out, "\n");

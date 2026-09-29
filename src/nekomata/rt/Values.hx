@@ -7,6 +7,7 @@ import haxe.io.Bytes;
 
 // A neko string: a mutable, fixed-length run of bytes
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class NString {
 	public var b:Bytes;
 
@@ -23,6 +24,7 @@ class NString {
 // A neko float. hxcpp boxes a Float with a small integral value as an Int, which would
 //  make neko's 2.0 an int, so floats are boxed here instead
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class NFloat {
 	public var v:Float;
 
@@ -32,6 +34,7 @@ class NFloat {
 
 // A neko object: fields keyed by hash, with an optional prototype
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class NObject {
 	public var fields:haxe.ds.IntMap<Dynamic>;
 	public var proto:Null<NObject>;
@@ -41,11 +44,13 @@ class NObject {
 		this.proto = proto;
 	}
 
+	// A field that is there and not null takes one lookup
 	public function find(h:Int):Dynamic {
 		var o = this;
 		while (o != null) {
-			if (o.fields.exists(h))
-				return o.fields.get(h);
+			var v = o.fields.get(h);
+			if (v != null || o.fields.exists(h))
+				return v;
 			o = o.proto;
 		}
 		return null;
@@ -92,6 +97,7 @@ enum abstract FunctionKind(Int) {
 }
 
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class NFunction {
 	public static inline var VAR_ARGS = -1;
 
@@ -117,16 +123,23 @@ class NFunction {
 }
 
 // A tail call a function returns for its caller to make, so that calls in tail
-//  position do not grow the stack, as neko's TailCall reuses the frame
+//  position do not grow the stack, as neko's TailCall reuses the frame. Up to three
+//  arguments travel in a, b and c, more in args
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class TailCall {
 	public var f:Dynamic;
 	public var th:Dynamic;
+	public var n:Int;
+	public var a:Dynamic;
+	public var b:Dynamic;
+	public var c:Dynamic;
 	public var args:Array<Dynamic>;
 
-	public function new(f:Dynamic, th:Dynamic, args:Array<Dynamic>) {
+	public function new(f:Dynamic, th:Dynamic, n:Int, args:Array<Dynamic>) {
 		this.f = f;
 		this.th = th;
+		this.n = n;
 		this.args = args;
 	}
 }

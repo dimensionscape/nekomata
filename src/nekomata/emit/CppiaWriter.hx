@@ -1,5 +1,7 @@
 package nekomata.emit;
 
+import haxe.io.Bytes;
+
 // A cppia expression, as the loader's createCppiaExpr reads it
 enum E {
 	EBlock(es:Array<E>);
@@ -14,15 +16,23 @@ enum E {
 	EArrayI(arr:E, index:E);
 	EArrayDef(items:Array<E>);
 	EIf(cond:E, then:E);
+	EIfElse(cond:E, then:E, otherwise:E);
 	EWhile(cond:E, body:E);
 	ESwitch(cond:E, cases:Array<{value:Int, body:E}>);
 	ETry(body:E, v:Local, handler:E);
 	EReturn(e:E);
 	EThrow(e:E);
 	EContinue;
+	EBreak;
 	EDecl(v:Local, init:E);
-	// The source position for the expression and the ones it contains
-	EPos(file:String, line:Int, e:E);
+	// Locals declared together: with no init, a local starts as null, or 0 for an int
+	EVars(vars:Array<{v:Local, init:Null<E>}>);
+	ENot(e:E);
+	EIsNull(e:E);
+	ENotNull(e:E);
+	ELess(a:E, b:E);
+	// The source line for the expression and the ones it contains; file is a string id
+	EPos(file:Int, line:Int, e:E);
 }
 
 typedef Local = {
@@ -32,7 +42,8 @@ typedef Local = {
 }
 
 // Writes the text form of cppia (CPPIA magic), as Haxe's gencpp script_writer does
-//  with -debug, for the host's loader
+//  with -debug, for the host's loader. The text goes straight into bytes
+@:build(nekomata.build.NoFrames.build())
 class CppiaWriter {
 	public static inline var DYNAMIC = "Dynamic";
 	public static inline var ARRAY = "Array.Any";
@@ -42,15 +53,22 @@ class CppiaWriter {
 	var stringIds = new Map<String, Int>();
 	var types:Array<String> = [];
 	var typeIds = new Map<String, Int>();
-	var body = new StringBuf();
+	var out = new Out();
 	var classCount = 0;
-	var file:String = "";
-	var line:Int = 0;
+	var classNames:Array<String> = [];
+	// Where the names of the classes are in the bytes toBytes gives
+	public var classOffsets(default, null):Array<Int> = [];
+	var file = 0;
+	var line = 0;
+	var arrayType:Int;
+	var dynamicType:Int;
 
 	public function new() {
 		// Type 0 means none, as in Haxe's output
 		typeId("");
 		stringId("");
+		arrayType = typeId(ARRAY);
+		dynamicType = typeId(DYNAMIC);
 	}
 
 	public function stringId(s:String):Int {
@@ -74,15 +92,16 @@ class CppiaWriter {
 	}
 
 	inline function w(s:String)
-		body.add(s);
+		out.ascii(s);
 
 	inline function wi(i:Int) {
-		body.add(i);
-		body.add(" ");
+		out.int(i);
+		out.byte(" ".code);
 	}
 
 	public function beginClass(name:String, fieldCount:Int) {
 		classCount++;
+		classNames.push(name);
 		w("CLASS ");
 		wi(typeId(name));
 		w("0 0\n");
@@ -97,8 +116,8 @@ class CppiaWriter {
 		w("0\n");
 	}
 
-	// file and line are the function's own position, which stack frames report
-	public function staticFunction(name:String, args:Array<Local>, ret:String, fnBody:E, file:String, line:Int) {
+	// file (a string id) and line are the function's own position, which stack frames report
+	public function staticFunction(name:String, args:Array<Local>, ret:String, fnBody:E, file:Int, line:Int) {
 		this.file = file;
 		this.line = line;
 		w("FUNCTION 1 0 ");
@@ -130,7 +149,7 @@ class CppiaWriter {
 
 	// Each expression starts with its file and line
 	inline function prefix() {
-		wi(stringId(file));
+		wi(file);
 		wi(line);
 	}
 
@@ -197,18 +216,23 @@ class CppiaWriter {
 				w("\n");
 			case EArrayI(arr, index):
 				w("ARRAYI ");
-				wi(typeId(ARRAY));
+				wi(arrayType);
 				w("\n");
 				expr(arr);
 				expr(index);
 			case EArrayDef(items):
 				w("ADEF ");
-				wi(typeId(ARRAY));
+				wi(arrayType);
 				exprs(items);
 			case EIf(cond, then):
 				w("IF\n");
 				expr(cond);
 				expr(then);
+			case EIfElse(cond, then, otherwise):
+				w("IFELSE\n");
+				expr(cond);
+				expr(then);
+				expr(otherwise);
 			case EWhile(cond, loop):
 				w("WHILE 1\n");
 				expr(cond);
@@ -231,47 +255,174 @@ class CppiaWriter {
 				expr(handler);
 			case EReturn(value):
 				w("RETVAL ");
-				wi(typeId(DYNAMIC));
+				wi(dynamicType);
 				w("\n");
 				expr(value);
 			case EThrow(value):
 				w("THROW\n");
 				expr(value);
+			case EBreak:
+				w("BREAK\n");
 			case EContinue:
 				w("CONTINUE\n");
+			case EVars(vars):
+				w("TVARS ");
+				wi(vars.length);
+				w("\n");
+				for (d in vars) {
+					if (d.init == null) {
+						w("VARDECL ");
+						local(d.v);
+						w("\n");
+					} else {
+						w("VARDECLI ");
+						local(d.v);
+						wi(typeId(d.v.type));
+						w("\n");
+						expr(d.init);
+					}
+				}
 			case EDecl(v, init):
 				w("TVARS 1\nVARDECLI ");
 				local(v);
 				wi(typeId(v.type));
 				w("\n");
 				expr(init);
+			case ENot(value):
+				w("!\n");
+				expr(value);
+			case EIsNull(value):
+				w("ISNULL\n");
+				expr(value);
+			case ENotNull(value):
+				w("NOTNULL\n");
+				expr(value);
+			case ELess(a, b):
+				w("<\n");
+				expr(a);
+				expr(b);
 			case EPos(_, _, _):
 		}
 	}
 
-	public function toString():String {
-		var out = new StringBuf();
-		out.add("CPPIA\n");
-		out.add(strings.length);
-		out.add("\n");
+	// The whole module: header, string and type tables, then the classes and main
+	public function toBytes():Bytes {
+		var head = new Out();
+		head.ascii("CPPIA\n");
+		head.int(strings.length);
+		head.byte("\n".code);
 		for (s in strings) {
-			out.add(haxe.io.Bytes.ofString(s).length);
-			out.add(" ");
-			out.add(s);
-			out.add("\n");
+			var b = Bytes.ofString(s);
+			head.int(b.length);
+			head.byte(" ".code);
+			head.bytes(b);
+			head.byte("\n".code);
 		}
-		out.add(types.length);
-		out.add("\n");
+		head.int(types.length);
+		head.byte("\n".code);
 		for (t in types) {
-			out.add(haxe.io.Bytes.ofString(t).length);
-			out.add(" ");
-			out.add(t);
-			out.add("\n");
+			var b = Bytes.ofString(t);
+			head.int(b.length);
+			head.byte(" ".code);
+			if (classNames.indexOf(t) >= 0)
+				classOffsets.push(head.length);
+			head.bytes(b);
+			head.byte("\n".code);
 		}
-		out.add(classCount);
-		out.add("\n");
-		out.add(body.toString());
-		out.add("RESOURCES 0\n");
-		return out.toString();
+		head.int(classCount);
+		head.byte("\n".code);
+		out.ascii("RESOURCES 0\n");
+		var result = Bytes.alloc(head.length + out.length);
+		result.blit(0, head.buf, 0, head.length);
+		result.blit(head.length, out.buf, 0, out.length);
+		return result;
+	}
+}
+
+// A growable run of bytes that ints and ASCII text are written into
+@:build(nekomata.build.NoFrames.build())
+class Out {
+	public var buf:Bytes;
+	public var length = 0;
+
+	public function new()
+		buf = Bytes.alloc(1 << 16);
+
+	inline function need(n:Int)
+		if (length + n > buf.length)
+			grow(n);
+
+	function grow(n:Int) {
+		var size = buf.length * 2;
+		while (size < length + n)
+			size *= 2;
+		var b = Bytes.alloc(size);
+		b.blit(0, buf, 0, length);
+		buf = b;
+	}
+
+	// Sets a byte the buffer has room for
+	inline function put(i:Int, c:Int) {
+		#if cpp
+		cpp.NativeArray.unsafeSet(buf.getData(), i, c);
+		#else
+		buf.set(i, c);
+		#end
+	}
+
+	public inline function byte(c:Int) {
+		need(1);
+		put(length++, c);
+	}
+
+	// Text the writer knows is ASCII
+	public function ascii(s:String) {
+		var n = s.length;
+		need(n);
+		for (i in 0...n)
+			put(length + i, StringTools.fastCodeAt(s, i));
+		length += n;
+	}
+
+	public function bytes(b:Bytes) {
+		need(b.length);
+		buf.blit(length, b, 0, b.length);
+		length += b.length;
+	}
+
+	public function int(v:Int) {
+		need(11);
+		if (v < 0) {
+			if (v == -2147483648) {
+				ascii("-2147483648");
+				return;
+			}
+			put(length++, "-".code);
+			v = -v;
+		}
+		if (v < 10) {
+			put(length++, "0".code + v);
+			return;
+		}
+		var digits = 0, t = v;
+		while (t > 0) {
+			digits++;
+			t = div10(t);
+		}
+		var p = length + digits;
+		length = p;
+		while (v > 0) {
+			var q = div10(v);
+			put(--p, "0".code + (v - q * 10));
+			v = q;
+		}
+	}
+
+	static inline function div10(v:Int):Int {
+		#if cpp
+		return untyped __cpp__("({0} / 10)", v);
+		#else
+		return Std.int(v / 10);
+		#end
 	}
 }

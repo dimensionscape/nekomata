@@ -77,6 +77,13 @@ class NekoBuiltins {
 		return f;
 	}
 
+	// The builtin, or null when there is none, for a module to look up once
+	public static function find(h:Int):Dynamic {
+		if (table == null)
+			init();
+		return table.get(h);
+	}
+
 	static function add(name:String, nargs:Int, fn:Dynamic)
 		table.set(nekomata.neko.Hash.field(name), new NFunction(fn, nargs, Primitive, null, null, name));
 
@@ -104,6 +111,94 @@ class NekoBuiltins {
 		return v;
 	}
 
+	// Builtins that never run neko code, which translated code may call straight
+	//  from where it uses them: without a frame of their own, which neko's stack
+	//  traces would not show, as none of them calls back into neko code
+
+	@:noDebug public static function amake(n:Dynamic):Dynamic {
+		var size = int(n, "$amake");
+		var a:Array<Dynamic> = [];
+		if (size > 0)
+			a[size - 1] = null;
+		return a;
+	}
+
+	// $hget, $hset, $hmem and $hremove with no compare function, which run no neko code,
+	//  as the code calls them where they are used
+	@:noDebug public static function hgetNull(h:Dynamic, k:Dynamic):Dynamic {
+		var c = hash(h).find(k, null);
+		return c == null ? null : c.value;
+	}
+
+	@:noDebug public static function hsetNull(h:Dynamic, k:Dynamic, v:Dynamic):Bool {
+		var t = hash(h);
+		var c = t.find(k, null);
+		if (c != null) {
+			c.value = v;
+			return false;
+		}
+		t.add(k, v);
+		return true;
+	}
+
+	@:noDebug public static function hmemNull(h:Dynamic, k:Dynamic):Bool
+		return hash(h).find(k, null) != null;
+
+	@:noDebug public static function hremoveNull(h:Dynamic, k:Dynamic):Bool
+		return hash(h).remove(k, null);
+
+	@:noDebug public static function asize(a:Dynamic):Dynamic {
+		if (Rt.typeOf(a) != Rt.TARRAY)
+			Rt.error("$asize");
+		return untyped __cpp__("{0}->__length()", a);
+	}
+
+	@:noDebug public static function ssize(s:Dynamic):Dynamic
+		return string(s, "$ssize").b.length;
+
+	@:noDebug public static function sget(s:Dynamic, p:Dynamic):Dynamic {
+		var b = string(s, "$sget").b, pos = int(p, "$sget");
+		return pos < 0 || pos >= b.length ? null : b.get(pos);
+	}
+
+	@:noDebug public static function sset(s:Dynamic, p:Dynamic, c:Dynamic):Dynamic {
+		var b = string(s, "$sset").b, pos = int(p, "$sset"), v = int(c, "$sset") & 0xFF;
+		if (pos < 0 || pos >= b.length)
+			return null;
+		b.set(pos, v);
+		return v;
+	}
+
+	@:noDebug public static function toInt(v:Dynamic):Dynamic {
+		switch Rt.typeOf(v) {
+			case Rt.TINT:
+				return v;
+			case Rt.TFLOAT:
+				return untyped __cpp__("nk_float_to_int({0})", Rt.num(v));
+			case Rt.TSTRING:
+				var b = Rt.bytes(v);
+				var ok = false;
+				var r:Int = untyped __cpp__("nk_string_to_int({0}, {1}, {2})", b.getData(), b.length, ok);
+				return ok ? r : null;
+			default:
+				return null;
+		}
+	}
+
+	@:noDebug public static function toFloat(v:Dynamic):Dynamic {
+		switch Rt.typeOf(v) {
+			case Rt.TINT | Rt.TFLOAT:
+				return new NFloat(Rt.num(v));
+			case Rt.TSTRING:
+				var b = Rt.bytes(v);
+				var ok = false;
+				var r:Float = untyped __cpp__("nk_string_to_float({0}, {1}, {2})", b.getData(), b.length, ok);
+				return ok ? new NFloat(r) : null;
+			default:
+				return null;
+		}
+	}
+
 	public static function init() {
 		if (table != null)
 			return;
@@ -124,15 +219,9 @@ class NekoBuiltins {
 
 		// Arrays
 		add("array", NFunction.VAR_ARGS, (args:Array<Dynamic>) -> args.copy());
-		add("amake", 1, function(n:Dynamic) {
-			var size = int(n, "$amake");
-			var a:Array<Dynamic> = [];
-			if (size > 0)
-				a[size - 1] = null;
-			return a;
-		});
+		add("amake", 1, amake);
 		add("acopy", 1, (a:Dynamic) -> array(a, "$acopy").copy());
-		add("asize", 1, (a:Dynamic) -> array(a, "$asize").length);
+		add("asize", 1, asize);
 		add("asub", 3, function(a:Dynamic, p:Dynamic, l:Dynamic) {
 			var arr = array(a, "$asub"), pos = int(p, "$asub"), len = int(l, "$asub");
 			if (pos < 0 || len < 0 || pos + len > arr.length)
@@ -159,7 +248,7 @@ class NekoBuiltins {
 
 		// Strings
 		add("smake", 1, (n:Dynamic) -> new NString(Bytes.alloc(int(n, "$smake"))));
-		add("ssize", 1, (s:Dynamic) -> string(s, "$ssize").b.length);
+		add("ssize", 1, ssize);
 		add("scopy", 1, function(s:Dynamic) {
 			var b = string(s, "$scopy").b;
 			var c = Bytes.alloc(b.length);
@@ -172,17 +261,8 @@ class NekoBuiltins {
 				Rt.error("$ssub");
 			return new NString(b.sub(pos, len));
 		});
-		add("sget", 2, function(s:Dynamic, p:Dynamic):Dynamic {
-			var b = string(s, "$sget").b, pos = int(p, "$sget");
-			return pos < 0 || pos >= b.length ? null : b.get(pos);
-		});
-		add("sset", 3, function(s:Dynamic, p:Dynamic, c:Dynamic):Dynamic {
-			var b = string(s, "$sset").b, pos = int(p, "$sset"), v = int(c, "$sset") & 0xFF;
-			if (pos < 0 || pos >= b.length)
-				return null;
-			b.set(pos, v);
-			return v;
-		});
+		add("sget", 2, sget);
+		add("sset", 3, sset);
 		add("sblit", 5, function(dst:Dynamic, dp:Dynamic, src:Dynamic, sp:Dynamic, l:Dynamic) {
 			var d = string(dst, "$sblit").b, s = string(src, "$sblit").b;
 			var dpos = int(dp, "$sblit"), spos = int(sp, "$sblit"), len = int(l, "$sblit");
@@ -251,34 +331,8 @@ class NekoBuiltins {
 		add("objgetproto", 1, (o:Dynamic) -> object(o, "$objgetproto").proto);
 
 		// Conversions and types
-		add("int", 1, function(v:Dynamic):Dynamic {
-			switch Rt.typeOf(v) {
-				case Rt.TINT:
-					return v;
-				case Rt.TFLOAT:
-					return untyped __cpp__("nk_float_to_int({0})", Rt.num(v));
-				case Rt.TSTRING:
-					var b = Rt.bytes(v);
-					var ok = false;
-					var r:Int = untyped __cpp__("nk_string_to_int({0}, {1}, {2})", b.getData(), b.length, ok);
-					return ok ? r : null;
-				default:
-					return null;
-			}
-		});
-		add("float", 1, function(v:Dynamic):Dynamic {
-			switch Rt.typeOf(v) {
-				case Rt.TINT | Rt.TFLOAT:
-					return new NFloat(Rt.num(v));
-				case Rt.TSTRING:
-					var b = Rt.bytes(v);
-					var ok = false;
-					var r:Float = untyped __cpp__("nk_string_to_float({0}, {1}, {2})", b.getData(), b.length, ok);
-					return ok ? new NFloat(r) : null;
-				default:
-					return null;
-			}
-		});
+		add("int", 1, toInt);
+		add("float", 1, toFloat);
 		add("string", 1, (v:Dynamic) -> new NString(Rt.valueBytes(v)));
 		add("typeof", 1, (v:Dynamic) -> Rt.typeOf(v));
 		add("compare", 2, (a:Dynamic, b:Dynamic) -> Rt.compareOp(a, b));
@@ -444,6 +498,16 @@ class NHash {
 	// Finds the binding for k, comparing keys with cmp, or with $compare when null
 	public function find(k:Dynamic, cmp:Null<(Dynamic, Dynamic) -> Bool>):Null<HCell> {
 		var c = cells[valHash(k) % ncells];
+		if (cmp == null && Rt.isInt(k)) {
+			// An int key equals only an int of the same value
+			var i:Int = k;
+			while (c != null) {
+				if (Rt.isInt(c.key) && (c.key : Int) == i)
+					return c;
+				c = c.next;
+			}
+			return null;
+		}
 		while (c != null) {
 			if (cmp == null ? Rt.compare(k, c.key) == 0 : cmp(k, c.key))
 				return c;
@@ -501,6 +565,16 @@ class NHash {
 	// Neko's val_hash (vm/hash.c), stable across runs: it reads the contents of
 	//  strings, floats, arrays and objects, and ignores functions and abstracts
 	public static function valHash(v:Dynamic):Int {
+		// The common keys, without the state hashRec needs for nested values
+		if (Rt.isInt(v))
+			return (v : Int) & 0x3FFFFFFF;
+		if (Std.isOfType(v, NString)) {
+			var b = (v : NString).b;
+			var h = 0, k = b.length;
+			while (k > 0)
+				h = h * 19 + signed(b.get(--k));
+			return h & 0x3FFFFFFF;
+		}
 		var h = new HashState();
 		hashRec(v, h, null);
 		return h.h & 0x3FFFFFFF;

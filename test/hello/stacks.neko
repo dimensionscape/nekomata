@@ -1,0 +1,54 @@
+f = function(x) {
+	if( x == 0 )
+		$throw("boom");
+	f(x - 1);
+	x
+}
+g = function(o) {
+	o.a +
+	o.b.c
+}
+tail = function(o) {
+	return g(o);
+}
+h = function() {
+	try g({ a => 1, b => null }) catch e { $print(e, " ", $excstack(), "\n") }
+	try f(3) catch e { $print(e, " ", $excstack(), "\n") }
+	try $print("x" +
+		$array(1,2)[5].z) catch e { $print(e, " ", $excstack(), "\n") }
+	try tail({ a => 1 }) catch e { $print(e, " ", $excstack(), "\n") }
+	try {
+		var a = $array(1, 2, 3);
+		var i = 0;
+		while( i < 4 ) {
+			$print(a[i] +
+				a[i + 1] * 2, " ");
+			i += 1;
+		}
+	} catch e { $print(e, " ", $excstack(), "\n") }
+}
+h();
+$print($callstack(), "\n");
+var add = function(a, b) { a + b };
+try add(1, $array(2)) catch e { $print(e, " ", $excstack(), "\n") }
+k = function(n) {
+	var s = 0;
+	while( n > 0 ) {
+		s += n;
+		n -= 1;
+	}
+	if( s > 10 ) $throw(s);
+	s
+}
+try k(10) catch e { $print(e, " ", $excstack(), "\n") }
+var o = { x => 1, y => 2 };
+var swap = function(a, b) { var t = a; a = b; b = t; $print(a, b, "\n"); };
+swap(o.x, o.y);
+var p = $array(5, 6);
+var q = p[0];
+p[0] = p[1];
+p[1] = q;
+$print(p, " ", q, "\n");
+var j = 3;
+var r = j + (j = 10) + j;
+$print(r, " ", j, "\n");

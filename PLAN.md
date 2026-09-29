@@ -266,6 +266,39 @@ call, as Ndll does for CFFI:
 Order of work: the core and buffers first, which cover libraries like regexp, zlib and
 sqlite; the VM functions with a library that needs them (mod_neko, ui).
 
+## Notes from milestone 8
+
+- Where the time went: each neko operation is a call into the runtime, and a call of a
+  host function from cppia pushes its arguments on the script stack for a generated
+  wrapper. The runtime's functions also pushed host stack frames of their own and
+  checked classes with `Std.isOfType`, a neko call went through `Rt.call` and a Dynamic
+  closure call, and every basic block went back through the dispatch switch.
+- The emitter keeps the accumulator and stack slots as expressions until something
+  needs them in a local, so a run of instructions is one statement. cppia records a
+  frame's line per statement, so an effect only goes into the next instruction's
+  statement when both are at the same line or one of them cannot throw. A block with
+  one predecessor is written where that predecessor goes to it; a loop's head runs in a
+  while of its own. Calls through a global that always holds one of the module's
+  functions call its static function directly, and builtins that run no neko code are
+  called where they are used.
+- cppia looks up a static function by walking its class's functions, so a module's
+  functions go in classes of 256, and Rt declares the functions translated code calls
+  most first. The JIT compiles a switch as a chain of tests, so a large one becomes a
+  tree of comparisons under the JIT.
+- Binary cppia (`CPPIB`) carries no file or line for expressions, which neko's stack
+  traces need, so the host writes text. A cache of translated modules, keyed by a hash of
+  the bytecode and of the host's sources, takes care of startup instead.
+- The JIT compiles a whole module when it loads it, which costs more than it gains for
+  short runs of big programs: Haxe's unit tests load in 0.45 s interpreted and 0.9 s
+  under the JIT. Code that is mostly calls into the runtime gains least from it.
+- Measured on Windows, CPU time: fib(30) 391 ms interpreted and 94 ms with the JIT, from
+  1109 and 438 (neko 94); haxelib's `run.n version` 47 ms with the cache and 172 ms
+  without, from 547; Haxe's unit tests 1.5 s with the cache, from 7.5 s (neko 0.34 s).
+- Next: typed int locals for slots whose values are always ints, found from def-use
+  webs, so loop counters and indexes use cppia's own arithmetic; float results used at
+  once without an `NFloat`; bytecode calls without the Dynamic closure call; and
+  translating each function when it is first called, so big programs load less.
+
 ## Open questions
 
 - Performance of the switch-dispatch form against neko's interpreter; structured

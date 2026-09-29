@@ -6,6 +6,7 @@ import nekomata.neko.Module;
 class ReadError extends haxe.Exception {}
 
 // Reads a .n file the way neko's neko_read_module does, with the same checks
+@:build(nekomata.build.NoFrames.build())
 class Reader {
 	var bytes:Bytes;
 	var pos:Int;

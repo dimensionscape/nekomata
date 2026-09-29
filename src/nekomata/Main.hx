@@ -107,6 +107,7 @@ class Main {
 		nekomata.rt.NekoBuiltins.init();
 		nekomata.rt.Primitives.init();
 		NekoLoader.translate = translate;
+		Emitter.builtinExists = h -> nekomata.rt.NekoBuiltins.find(h) != null;
 	}
 
 	// What neko's main does: the module from the loader's path, its args the rest
@@ -168,15 +169,56 @@ class Main {
 		}
 	}
 
-	// Translates a module to cppia and loads it, returning what runs it
+	// NEKOMATA_TIME=1 reports how long each module takes to read, translate and load
+	static var timing = Sys.getEnv("NEKOMATA_TIME") == "1";
+
+	// The class a module's code goes in: one per module loaded, all as long, so that a
+	//  cached translation can take the name of the class it loads as
+	static function className():String
+		return "NekoModule" + StringTools.lpad(Std.string(moduleCount++), "0", 6);
+
+	// Translates a module to cppia, or takes the cached translation, and loads it,
+	//  returning what runs it
 	static function translate(m:NModule, bytes:Bytes):() -> Void {
-		var text = Emitter.emit(Reader.read(bytes), 'NekoModule${moduleCount++}', m.name);
+		var t0 = haxe.Timer.stamp();
+		// The JIT's switch is a chain of tests, which the translation allows for
+		var jit:Bool = untyped __cpp__("__scriptable_cppia_jit_active()");
+		var cls = className();
+		var key = Cache.enabled ? Cache.key(bytes, m.name, jit) : null;
+		var cppia = key == null ? null : Cache.get(key, cls);
+		var module:cpp.cppia.Module = null;
+		var t1 = haxe.Timer.stamp(), t2 = t1;
+		if (cppia != null)
+			try {
+				module = cpp.cppia.Module.fromData(cppia.getData());
+			} catch (e:Dynamic) {
+				// A cached translation that does not load is made again, as another class
+				cls = className();
+			}
+		var cached = module != null;
+		if (!cached) {
+			var code = Reader.read(bytes);
+			t1 = haxe.Timer.stamp();
+			var t = Emitter.translate(code, cls, m.name, jit);
+			cppia = t.cppia;
+			t2 = haxe.Timer.stamp();
+			if (key != null)
+				Cache.put(key, cppia, t.classOffsets, cls.length);
+		}
 		if (emitTo != null) {
-			sys.io.File.saveContent(emitTo, text);
+			sys.io.File.saveBytes(emitTo, cppia);
 			emitTo = null;
 		}
-		var module = cpp.cppia.Module.fromString(text);
+		if (!cached)
+			module = cpp.cppia.Module.fromData(cppia.getData());
+		var t3 = haxe.Timer.stamp();
 		module.boot();
+		if (timing) {
+			inline function ms(a:Float, b:Float)
+				return Std.string(Math.round((b - a) * 1000));
+			var how = cached ? 'cached, loaded in ${ms(t0, t3)} ms' : 'read ${ms(t0, t1)} ms, translate ${ms(t1, t2)} ms, load ${ms(t2, t3)} ms';
+			Sys.stderr().writeString('[nekomata] ${m.name}: ${cppia.length} bytes of cppia, $how\n');
+		}
 		return function() {
 			Boot.pending = m;
 			module.run();
