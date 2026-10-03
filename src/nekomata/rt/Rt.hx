@@ -494,6 +494,13 @@ class Rt {
 		return a;
 	}
 
+	// Mod of two ints, which neko refuses for a zero divisor
+	public static function modInt(a:Int, b:Int):Int {
+		if (b == 0)
+			opError("%");
+		return a % b;
+	}
+
 	public static function shl(a:Dynamic, b:Dynamic):Int
 		return intOp(a, b, "<<") << (b : Int);
 

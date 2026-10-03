@@ -30,7 +30,8 @@ enum E {
 	ENot(e:E);
 	EIsNull(e:E);
 	ENotNull(e:E);
-	ELess(a:E, b:E);
+	// One of cppia's operators on two values, such as + or <
+	EBinop(op:String, a:E, b:E);
 	// The source line for the expression and the ones it contains; file is a string id
 	EPos(file:Int, line:Int, e:E);
 }
@@ -297,8 +298,9 @@ class CppiaWriter {
 			case ENotNull(value):
 				w("NOTNULL\n");
 				expr(value);
-			case ELess(a, b):
-				w("<\n");
+			case EBinop(op, a, b):
+				w(op);
+				w("\n");
 				expr(a);
 				expr(b);
 			case EPos(_, _, _):

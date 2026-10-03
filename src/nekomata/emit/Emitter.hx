@@ -40,7 +40,13 @@ class Emitter {
 	var pc:Local;
 	var traps:Local;
 	var slots:Array<Local>;
+	// The int locals of the slots, for where a slot holds only ints
+	var ints:Array<Local>;
 	var scope:Scope;
+	// The instruction being written
+	var curPc = 0;
+	// Which locals are ints, by id
+	var intVar:Array<Bool> = [];
 	var hasTraps:Bool;
 
 	// Module analysis
@@ -73,6 +79,17 @@ class Emitter {
 
 	// The operations the runtime has a version of with an int on the right
 	static final INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq"]) op => true];
+
+	// The operations that are cppia's own on two ints, as neko does them on its ints
+	static final NATIVE_OPS = [
+		"add" => "+", "sub" => "-", "mult" => "*", "shl" => "<<", "shr" => ">>", "ushr" => ">>>", "or" => "|", "and" => "&", "xor" => "^",
+		"eq" => "==", "neq" => "!=", "lt" => "<", "lte" => "<=", "gt" => ">", "gte" => ">="
+	];
+	// The cppia operators and the runtime functions that give an int
+	static final INT_RESULTS = [for (op in ["+", "-", "*", "<<", ">>", ">>>", "|", "&", "^"]) op => true];
+	static final INT_CALLS = [
+		for (f in ["shl", "shr", "ushr", "or", "and", "xor", "modInt", "typeOf", "hash", "physCompare"]) f => true
+	];
 
 	// Builtins that run no neko code, with the runtime function that does each
 	static final LEAF_BUILTINS:Map<Int, {cls:String, fn:String, nargs:Int, isBool:Bool, canThrow:Bool}> = [
@@ -130,8 +147,11 @@ class Emitter {
 		w = new CppiaWriter();
 	}
 
-	function local(name:String, type = CppiaWriter.DYNAMIC):Local
-		return {name: name, id: nextVar++, type: type};
+	function local(name:String, type = CppiaWriter.DYNAMIC):Local {
+		var l = {name: name, id: nextVar++, type: type};
+		intVar[l.id] = type == CppiaWriter.INT;
+		return l;
+	}
 
 	// hxcpp passes stack frames as class::method::file::line, and Haxe's debug info names
 	//  positions like Class::method, so the separator is escaped; NekoStack restores it.
@@ -392,6 +412,7 @@ class Emitter {
 		env = local("env", CppiaWriter.ARRAY);
 		var nargs = s.nargs < 0 ? 0 : s.nargs;
 		slots = [for (i in 0...s.maxDepth + 1) local('s$i')];
+		ints = [for (i in 0...s.maxDepth + 1) local('i$i', CppiaWriter.INT)];
 		acc = local("acc");
 		pc = local("pc", CppiaWriter.INT);
 		var pcs = s.pcs();
@@ -405,6 +426,7 @@ class Emitter {
 		usesG = usesB = false;
 
 		buildBlocks(pcs);
+		findIntSlots(pcs);
 
 		// Blocks written inline that end up nested too deep become cases as well
 		var cases = [];
@@ -460,8 +482,10 @@ class Emitter {
 			decls.push({v: gLocal, init: EStatic(cls, "G")});
 		if (usesB)
 			decls.push({v: bLocal, init: EStatic(cls, "B")});
-		for (i in nargs...slots.length)
+		for (i in nargs...slots.length) {
 			declare(slots[i], null);
+			declare(ints[i], null);
+		}
 		declare(pc, EInt(s.entry));
 		if (hasTraps)
 			decls.push({v: traps, init: EArrayDef([])});
@@ -484,7 +508,7 @@ class Emitter {
 			case EBlock(es) | ECallStatic(_, _, es) | EArrayDef(es):
 				for (x in es)
 					markUsed(x);
-			case ESet(a, b) | EArrayI(a, b) | EIf(a, b) | EWhile(a, b) | ELess(a, b):
+			case ESet(a, b) | EArrayI(a, b) | EIf(a, b) | EWhile(a, b) | EBinop(_, a, b):
 				markUsed(a);
 				markUsed(b);
 			case EIfElse(a, b, c):
@@ -514,7 +538,7 @@ class Emitter {
 		if (!jit || cases.length <= JIT_SWITCH)
 			return ESwitch(v(pc), cases);
 		var half = cases.length >> 1;
-		return EIfElse(ELess(v(pc), EInt(cases[half].value)), switchOn(cases.slice(0, half)), switchOn(cases.slice(half)));
+		return EIfElse(EBinop("<", v(pc), EInt(cases[half].value)), switchOn(cases.slice(0, half)), switchOn(cases.slice(half)));
 	}
 
 	var lastFile:String = null;
@@ -705,6 +729,174 @@ class Emitter {
 		}
 	}
 
+	// -- Int slots --
+	//
+	// A value pushed on the stack stays in its slot until it is popped, and neko's fixed
+	//  depths make the code it lives through a region: the slot at the instructions it
+	//  reaches, joined across each jump and step that keeps the slot. Where every value a
+	//  region is given is an int, the slot is an int local there, and an operation on two
+	//  such ints is cppia's own
+
+	// Where instruction p's slots start among the regions, and the regions as sets joined
+	//  by their parents
+	var regionBase:Array<Int> = [];
+	var regionParent:Array<Int> = [];
+	var intRegion:Array<Bool> = [];
+	// Whether the accumulator holds an int before each instruction
+	var accIsInt:Array<Bool> = [];
+	var succBuf:Array<Int> = [];
+
+	function region(p:Int, k:Int):Int {
+		var x = regionBase[p] + k;
+		var r = x;
+		while (regionParent[r] != r)
+			r = regionParent[r];
+		while (regionParent[x] != r) {
+			var n = regionParent[x];
+			regionParent[x] = r;
+			x = n;
+		}
+		return r;
+	}
+
+	// The local that holds slot k at instruction p
+	function slotLocal(p:Int, k:Int):Local
+		return intRegion[region(p, k)] ? ints[k] : slots[k];
+
+	// The instructions p goes on to, into buf; how many there are
+	function successors(p:Int, buf:Array<Int>):Int {
+		if (p >= m.codeSize)
+			return 0;
+		var n = 0;
+		switch m.op(p) {
+			case Jump:
+				buf[n++] = m.target(p);
+			case JumpIf | JumpIfNot | Trap:
+				buf[n++] = m.target(p);
+				buf[n++] = m.next(p);
+			case JumpTable:
+				for (k in 0...m.param(p) + 1)
+					buf[n++] = p + 2 + 2 * k;
+			case Ret | TailCall:
+			default:
+				buf[n++] = m.next(p);
+		}
+		return n;
+	}
+
+	function findIntSlots(pcs:Array<Int>) {
+		var depth = scope.depth;
+		var total = 0;
+		for (p in pcs) {
+			regionBase[p] = total;
+			total += depth.get(p);
+		}
+		for (i in 0...total) {
+			regionParent[i] = i;
+			intRegion[i] = true;
+		}
+		var buf = succBuf;
+		for (p in pcs) {
+			var dp = depth.get(p);
+			for (j in 0...successors(p, buf)) {
+				var q = buf[j];
+				var common = depth.get(q);
+				if (dp < common)
+					common = dp;
+				for (k in 0...common) {
+					var a = region(p, k), b = region(q, k);
+					if (a != b)
+						regionParent[a] = b;
+				}
+			}
+		}
+
+		// The arguments, and slots something other than a Push makes, such as a trap's,
+		//  hold any value
+		var nargs = scope.nargs < 0 ? 0 : scope.nargs;
+		for (k in 0...nargs)
+			intRegion[region(scope.entry, k)] = false;
+		for (p in pcs) {
+			var dp = depth.get(p);
+			var isPush = p < m.codeSize && m.op(p) == Push;
+			for (j in 0...successors(p, buf)) {
+				var q = buf[j];
+				for (k in (isPush ? dp + 1 : dp)...depth.get(q))
+					intRegion[region(q, k)] = false;
+			}
+		}
+
+		// Then what the accumulator holds and what each region is given, until no region
+		//  stops being an int one. Starting from ints everywhere, the accumulator holds
+		//  any value at the entry and in a trap's handler
+		for (p in pcs)
+			accIsInt[p] = true;
+		accIsInt[scope.entry] = false;
+		for (p in pcs)
+			if (p < m.codeSize && m.op(p) == Trap)
+				accIsInt[m.target(p)] = false;
+		var changed = true;
+		while (changed) {
+			changed = false;
+			var work = pcs.copy();
+			while (work.length > 0) {
+				var p = work.pop();
+				if (p >= m.codeSize || accIntAfter(p))
+					continue;
+				for (j in 0...successors(p, buf)) {
+					var q = buf[j];
+					if (accIsInt[q]) {
+						accIsInt[q] = false;
+						work.push(q);
+					}
+				}
+			}
+			for (p in pcs) {
+				if (p >= m.codeSize || accIsInt[p])
+					continue;
+				var r = switch m.op(p) {
+					case Push: region(m.next(p), depth.get(p));
+					case SetStack: region(p, depth.get(p) - 1 - m.param(p));
+					default: -1;
+				}
+				if (r >= 0 && intRegion[r]) {
+					intRegion[r] = false;
+					changed = true;
+				}
+			}
+		}
+	}
+
+	// Whether the accumulator holds an int after instruction p
+	function accIntAfter(p:Int):Bool {
+		var d = scope.depth.get(p);
+		return switch m.op(p) {
+			case AccInt:
+				true;
+			case AccStack | AccStack0 | AccStack1:
+				intRegion[region(p, d - 1 - m.slot(p))];
+			case Add | Sub | Mult | Mod:
+				accIsInt[p] && intRegion[region(p, d - 1)];
+			case Shl | Shr | UShr | Or | And | Xor | TypeOf | Hash | PhysCompare:
+				true;
+			default:
+				writesAcc(p) ? false : accIsInt[p];
+		}
+	}
+
+	// Whether e is an int in cppia's types: an int constant or local, or what cppia's
+	//  int operations or the runtime's int functions give
+	function isIntE(e:E):Bool {
+		return switch e {
+			case EInt(_): true;
+			case EVar(id): intVar[id] == true;
+			case EBinop(op, _, _): INT_RESULTS.exists(op);
+			case ECallStatic(RT, f, _): INT_CALLS.exists(f);
+			case EPos(_, _, x): isIntE(x);
+			default: false;
+		}
+	}
+
 	// -- Writing code --
 
 	// Writes block b and the blocks written inline after it, starting from state st
@@ -712,6 +904,7 @@ class Emitter {
 		var live = accLiveAfter(b);
 		for (k in 0...b.code.length) {
 			var p = b.code[k];
+			curPc = p;
 			if (p >= m.codeSize) {
 				// The module body ends with neko's Last, returning the accumulator
 				var pos = position(p);
@@ -749,7 +942,7 @@ class Emitter {
 			return;
 		}
 		b.inlined = false;
-		flush(st, out, scope.depth.get(t), b.accIn);
+		flush(st, out, t, b.accIn);
 		jumpTo(t, out);
 	}
 
@@ -773,11 +966,12 @@ class Emitter {
 		out.push(wrapped ? EBreak : EContinue);
 	}
 
-	// Puts the state in locals: the slots below depth, and the accumulator when it is read
-	function flush(st:State, out:Array<E>, depth:Int, accLive:Bool) {
-		for (k in 0...depth)
+	// Puts the state in locals as instruction t has them: its slots, and the accumulator
+	//  when it is read
+	function flush(st:State, out:Array<E>, t:Int, accLive:Bool) {
+		for (k in 0...scope.depth.get(t))
 			if (st.slots[k] != null)
-				materializeSlot(st, k, out);
+				materializeSlot(st, k, out, t);
 		if (accLive)
 			materializeAcc(st, out);
 		else
@@ -826,15 +1020,17 @@ class Emitter {
 			case ENot(x) | EIsNull(x) | ENotNull(x) | EPos(_, _, x): reads(x, id);
 			case ESet(l, r): reads(l, id) || reads(r, id);
 			case EIfElse(c, a, b): reads(c, id) || reads(a, id) || reads(b, id);
-			case ELess(a, b): reads(a, id) || reads(b, id);
+			case EBinop(_, a, b): reads(a, id) || reads(b, id);
 			default: false;
 		}
 	}
 
-	function materializeSlot(st:State, k:Int, out:Array<E>) {
+	// Writes slot k's pending value to its local, as instruction at has it, by default
+	//  the one being written
+	function materializeSlot(st:State, k:Int, out:Array<E>, at = -1) {
 		var s = st.slots[k];
 		st.slots[k] = null;
-		out.push(ESet(v(slots[k]), s.e));
+		out.push(ESet(v(slotLocal(at < 0 ? curPc : at, k)), s.e));
 	}
 
 	function materializeAcc(st:State, out:Array<E>) {
@@ -900,12 +1096,15 @@ class Emitter {
 	// The value of stack slot k
 	function slotValue(st:State, k:Int):E {
 		var s = st.slots[k];
-		return s == null ? v(slots[k]) : s.e;
+		return s == null ? v(slotLocal(curPc, k)) : s.e;
 	}
 
 	function slotPending(st:State, k:Int):Pending {
 		var s = st.slots[k];
-		return s != null ? s : Pending.ofLocal(slots[k].id, v(slots[k]));
+		if (s != null)
+			return s;
+		var l = slotLocal(curPc, k);
+		return Pending.ofLocal(l.id, v(l));
 	}
 
 	// The n slots below the top, deepest first
@@ -919,11 +1118,13 @@ class Emitter {
 	inline function effect(e:E, pos:Pos, canThrow = true, isBool = false):Pending
 		return Pending.ofEffect(e, pos.file, pos.line, canThrow || pos.throws, isBool);
 
-	// Puts the accumulator's value in slot k: kept pending when it is a constant or a
-	//  local, else written to the slot's local, which the accumulator then reads
-	function setSlot(st:State, k:Int, out:Array<E>, pos:Pos) {
+	// Puts the accumulator's value in slot k, as instruction at has it: kept pending when
+	//  it is a constant or a local, else written to the slot's local, which the
+	//  accumulator then reads
+	function setSlot(st:State, k:Int, out:Array<E>, pos:Pos, at:Int) {
 		var a = st.acc;
-		var id = slots[k].id;
+		var l = slotLocal(at, k);
+		var id = l.id;
 		if (a == null && !hasTraps)
 			a = Pending.ofLocal(acc.id, v(acc));
 		if (a != null && a.kind == LOCAL && a.local == id) {
@@ -939,9 +1140,9 @@ class Emitter {
 		var wasEffect = st.acc == null && a != null && a.kind == EFFECT;
 		release(st, id, out, true);
 		st.slots[k] = null;
-		out.push(EPos(pos.file, pos.line, ESet(v(slots[k]), e)));
+		out.push(EPos(pos.file, pos.line, ESet(v(l), e)));
 		if (wasEffect)
-			st.acc = Pending.ofLocal(id, v(slots[k]));
+			st.acc = Pending.ofLocal(id, v(l));
 	}
 
 	// Writes local l, which is not a slot, with what pending reads it put in locals first
@@ -961,6 +1162,20 @@ class Emitter {
 			var a = slotValue(st, d - 1);
 			var b = consumeAcc(st, out, pos, canThrow);
 			pop(st, d - 1, d);
+			if (isIntE(a) && isIntE(b)) {
+				// Two ints: cppia's own operation, and a remainder that only checks for zero
+				var native = NATIVE_OPS.get(name);
+				if (native != null) {
+					var r = effect(EBinop(native, a, b), pos, false, isBool);
+					r.droppable = !r.canThrow;
+					setAcc(st, out, r);
+					return;
+				}
+				if (name == "mod") {
+					setAcc(st, out, effect(call("modInt", [a, b]), pos));
+					return;
+				}
+			}
 			// With an int constant on the right, the runtime takes the int as it is
 			var e = switch b {
 				case EInt(_) if (INT_OPS.exists(name)): call(name + "I", [a, b]);
@@ -1020,9 +1235,9 @@ class Emitter {
 				else
 					setAcc(st, out, effect(ECallStatic(BUILTINS, "get", [EInt(param)]), pos));
 			case SetStack:
-				setSlot(st, d - 1 - param, out, pos);
+				setSlot(st, d - 1 - param, out, pos, p);
 			case Push:
-				setSlot(st, d, out, pos);
+				setSlot(st, d, out, pos, m.next(p));
 			case SetGlobal:
 				var e = readAcc(st, out, pos, false, liveAfter);
 				out.push(EPos(pos.file, pos.line, ESet(EArrayI(globals(), EInt(param)), e)));
@@ -1265,14 +1480,14 @@ class Emitter {
 			var ls = st.copy();
 			writeLocal(ls, env, known ? ENull : call("envOf", [fe]), loop, pos);
 			for (i in 0...n) {
-				var id = slots[i].id;
-				release(ls, id, loop);
+				var l = slotLocal(scope.entry, i);
+				release(ls, l.id, loop);
 				var value = slotPending(ls, d - n + i);
 				ls.slots[i] = null;
-				if (!(value.kind == LOCAL && value.local == id))
-					loop.push(ESet(v(slots[i]), value.e));
+				if (!(value.kind == LOCAL && value.local == l.id))
+					loop.push(ESet(v(l), value.e));
 			}
-			flush(ls, loop, n, blockAt[scope.entry].accIn);
+			flush(ls, loop, scope.entry, blockAt[scope.entry].accIn);
 			jumpTo(scope.entry, loop);
 			if (known) {
 				out.push(EPos(pos.file, pos.line, EBlock(loop)));
