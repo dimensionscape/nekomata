@@ -77,8 +77,10 @@ class Emitter {
 	static final loaderHash = nekomata.neko.Hash.field("loader");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
-	// The operations the runtime has a version of with an int on the right
-	static final INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq"]) op => true];
+	// The operations the runtime has a version of with an int on the right, named with
+	//  an I after, and with an int on the left, named with an i before
+	static final INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq", "aget"]) op => true];
+	static final LEFT_INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq"]) op => true];
 
 	// The operations that are cppia's own on two ints, as neko does them on its ints
 	static final NATIVE_OPS = [
@@ -1176,11 +1178,13 @@ class Emitter {
 					return;
 				}
 			}
-			// With an int constant on the right, the runtime takes the int as it is
-			var e = switch b {
-				case EInt(_) if (INT_OPS.exists(name)): call(name + "I", [a, b]);
-				default: call(name, [a, b]);
-			}
+			// With an int on one side, the runtime takes the int as it is
+			var e = if (INT_OPS.exists(name) && isIntE(b))
+				call(name + "I", [a, b]);
+			else if (LEFT_INT_OPS.exists(name) && isIntE(a))
+				call("i" + name, [a, b]);
+			else
+				call(name, [a, b]);
 			setAcc(st, out, effect(e, pos, canThrow, isBool));
 		}
 		function unary(make:E->E, canThrow:Bool, isBool = false) {
@@ -1224,7 +1228,7 @@ class Emitter {
 			case AccArray:
 				binary("aget");
 			case AccIndex | AccIndex0 | AccIndex1:
-				unary(a -> call("aget", [a, EInt(m.slot(p))]), true);
+				unary(a -> call("agetI", [a, EInt(m.slot(p))]), true);
 			case AccBuiltin:
 				if (param == loaderHash || param == exportsHash || builtinExists == null || builtinExists(param))
 				{
@@ -1251,11 +1255,11 @@ class Emitter {
 			case SetArray:
 				var a = slotValue(st, d - 1), i = slotValue(st, d - 2);
 				var e = readAcc(st, out, pos, true, liveAfter);
-				out.push(EPos(pos.file, pos.line, call("aset", [a, i, e])));
+				out.push(EPos(pos.file, pos.line, call(isIntE(i) ? "asetI" : "aset", [a, i, e])));
 			case SetIndex:
 				var a = slotValue(st, d - 1);
 				var e = readAcc(st, out, pos, true, liveAfter);
-				out.push(EPos(pos.file, pos.line, call("aset", [a, EInt(param), e])));
+				out.push(EPos(pos.file, pos.line, call("asetI", [a, EInt(param), e])));
 			case SetThis:
 				var a = st.acc;
 				if (a != null && a.kind == LOCAL && a.local == th.id)

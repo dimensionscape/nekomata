@@ -118,6 +118,31 @@ class Rt {
 	public static function neqI(a:Dynamic, b:Int):Bool
 		return isInt(a) ? (a : Int) != b : neq(a, b);
 
+	// The same with an int on the left
+	public static function iadd(a:Int, b:Dynamic):Dynamic
+		return isInt(b) ? a + (b : Int) : add(a, b);
+
+	public static function isub(a:Int, b:Dynamic):Dynamic
+		return isInt(b) ? a - (b : Int) : sub(a, b);
+
+	public static function ilt(a:Int, b:Dynamic):Bool
+		return isInt(b) ? a < (b : Int) : lt(a, b);
+
+	public static function ilte(a:Int, b:Dynamic):Bool
+		return isInt(b) ? a <= (b : Int) : lte(a, b);
+
+	public static function igt(a:Int, b:Dynamic):Bool
+		return isInt(b) ? a > (b : Int) : gt(a, b);
+
+	public static function igte(a:Int, b:Dynamic):Bool
+		return isInt(b) ? a >= (b : Int) : gte(a, b);
+
+	public static function ieq(a:Int, b:Dynamic):Bool
+		return isInt(b) ? a == (b : Int) : eq(a, b);
+
+	public static function ineq(a:Int, b:Dynamic):Bool
+		return isInt(b) ? a != (b : Int) : neq(a, b);
+
 	public static function newObject(proto:Dynamic):NObject {
 		if (proto == null)
 			return new NObject();
@@ -633,6 +658,21 @@ class Rt {
 	}
 
 	// Returns the value the instruction leaves in the accumulator
+	// aget and aset with an int index, as constants and int locals give
+	public static function agetI(a:Dynamic, i:Int):Dynamic {
+		if (vt(a) == VT_ARRAY)
+			return untyped __cpp__("[](::hx::Object *o, int k) -> ::Dynamic { return k < 0 || k >= o->__length() ? ::Dynamic() : o->__GetItem(k); }({0}.mPtr, {1})", a, i);
+		return aget(a, i);
+	}
+
+	public static function asetI(a:Dynamic, i:Int, v:Dynamic):Dynamic {
+		if (vt(a) == VT_ARRAY) {
+			untyped __cpp__("[](::hx::Object *o, int k, const ::Dynamic &v) { if (k >= 0 && k < o->__length()) o->__SetItem(k, v); }({0}.mPtr, {1}, {2})", a, i, v);
+			return v;
+		}
+		return aset(a, i, v);
+	}
+
 	public static function aset(a:Dynamic, i:Dynamic, v:Dynamic):Dynamic {
 		if (vt(a) == VT_ARRAY && isInt(i)) {
 			untyped __cpp__("[](::hx::Object *o, int k, const ::Dynamic &v) { if (k >= 0 && k < o->__length()) o->__SetItem(k, v); }({0}.mPtr, {1}, {2})", a, (i : Int), v);
