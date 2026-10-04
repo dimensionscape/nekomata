@@ -61,6 +61,8 @@ class CppiaWriter {
 	public var classOffsets(default, null):Array<Int> = [];
 	var file = 0;
 	var line = 0;
+	// The return type of the function being written, by id
+	var retType = 0;
 	var arrayType:Int;
 	var dynamicType:Int;
 
@@ -121,6 +123,7 @@ class CppiaWriter {
 	public function staticFunction(name:String, args:Array<Local>, ret:String, fnBody:E, file:Int, line:Int) {
 		this.file = file;
 		this.line = line;
+		retType = typeId(ret);
 		w("FUNCTION 1 0 ");
 		wi(stringId(name));
 		wi(typeId(ret));
@@ -144,6 +147,7 @@ class CppiaWriter {
 	}
 
 	public function main(e:E) {
+		retType = dynamicType;
 		w("MAIN\n");
 		expr(e);
 	}
@@ -256,7 +260,7 @@ class CppiaWriter {
 				expr(handler);
 			case EReturn(value):
 				w("RETVAL ");
-				wi(dynamicType);
+				wi(retType);
 				w("\n");
 				expr(value);
 			case EThrow(value):

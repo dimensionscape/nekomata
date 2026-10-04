@@ -47,6 +47,24 @@ class Emitter {
 	var curPc = 0;
 	// Which locals are ints, by id
 	var intVar:Array<Bool> = [];
+
+	// Int versions of the module's functions, which take ints for all their arguments
+	//  and are what calls with int arguments call. By global: whether a function has
+	//  one, whether it gives an int, and whether any code calls it
+	var variantOk:Array<Bool>;
+	var variantInt:Array<Bool>;
+	var variantUsed:Array<Bool>;
+	// Functions that go to their int version when they are given ints, as one that
+	//  gives an int or calls itself with ints is worth it
+	var variantEntry:Array<Bool>;
+	var variantClass = new Map<Int, String>();
+	// The int versions that give an int, by name
+	var intStatics = new Map<String, Bool>();
+	// What the last analysis of a function found: whether its arguments stayed ints,
+	//  whether every return gives an int, and the functions it calls with int arguments
+	var argsStayInt = true;
+	var returnsInt = true;
+	var intCalls:Array<Int> = [];
 	var hasTraps:Bool;
 
 	// Module analysis
@@ -187,12 +205,21 @@ class Emitter {
 	function run():haxe.io.Bytes {
 		scopes = StackCheck.run(m);
 		analyse();
+		findVariants();
 		// cppia finds a static function by looking through its class's functions one
 		//  by one, so the functions go in classes of CHUNK at most, the first with the
-		//  module's statics
+		//  module's statics, and the int versions in classes after them
 		for (k in 0...scopes.length)
 			if (scopes[k].global >= 0)
 				classOf.set(scopes[k].global, chunkClass(Std.int(k / CHUNK)));
+		var variants = [for (s in scopes) if (s.global >= 0 && variantUsed[s.global]) s];
+		var firstVariantChunk = Std.int((scopes.length + CHUNK - 1) / CHUNK);
+		for (k in 0...variants.length) {
+			var g = variants[k].global;
+			variantClass.set(g, chunkClass(firstVariantChunk + Std.int(k / CHUNK)));
+			if (variantInt[g])
+				intStatics.set('fi$g', true);
+		}
 		var k = 0;
 		while (k < scopes.length) {
 			var n = scopes.length - k < CHUNK ? scopes.length - k : CHUNK;
@@ -204,7 +231,15 @@ class Emitter {
 			} else
 				w.beginClass(chunkClass(Std.int(k / CHUNK)), n);
 			for (i in k...k + n)
-				writeFunction(scopes[i]);
+				writeFunction(scopes[i], false);
+			k += n;
+		}
+		k = 0;
+		while (k < variants.length) {
+			var n = variants.length - k < CHUNK ? variants.length - k : CHUNK;
+			w.beginClass(chunkClass(firstVariantChunk + Std.int(k / CHUNK)), n);
+			for (i in k...k + n)
+				writeFunction(variants[i], true);
 			k += n;
 		}
 		gLocal = null;
@@ -332,6 +367,106 @@ class Emitter {
 			default: -2;
 		}
 
+	// The module functions a Call or ObjCall at p can call directly: for a Call, the
+	//  function an AccGlobal just before gives; for an ObjCall, the functions the
+	//  module stores in the field an AccField just before reads
+	function directTargets(p:Int):Array<Int> {
+		var n = m.param(p);
+		switch m.op(p) {
+			case Call:
+				var f = accFunction(p);
+				if (f >= 0 && functionArgs(f) == n && constantGlobal(m.param(p - 2), scope.global < 0))
+					return [f];
+			case ObjCall:
+				if (!targets[p] && p >= 2 && m.isOp[p - 2] && m.op(p - 2) == AccField) {
+					var fs = fieldFunctions.get(m.param(p - 2));
+					if (fs != null)
+						return [for (f in fs) if (functionArgs(f) == n) f];
+				}
+			default:
+		}
+		return [];
+	}
+
+	// Which functions get an int version, which give an int, and which are called
+	function findVariants() {
+		var n = m.globals.length;
+		variantOk = [for (_ in 0...n) false];
+		variantInt = [for (_ in 0...n) false];
+		variantUsed = [for (_ in 0...n) false];
+		variantEntry = [for (_ in 0...n) false];
+		var selfCall = [for (_ in 0...n) false];
+		var byGlobal = new Map<Int, Scope>();
+		for (s in scopes)
+			if (s.global >= 0)
+				byGlobal.set(s.global, s);
+		// The functions code calls directly, which take arguments and give their result
+		//  back themselves, rather than a tail call for the caller to make
+		var candidates = [];
+		var calling = [];
+		for (s in scopes) {
+			scope = s;
+			var calls = false;
+			for (p in s.pcs())
+				if (p < m.codeSize && (m.op(p) == Call || m.op(p) == ObjCall))
+					for (g in directTargets(p)) {
+						calls = true;
+						var nargs = functionArgs(g);
+						if (!variantOk[g] && nargs >= 1 && !mayTail.exists(g) && byGlobal.exists(g)) {
+							variantOk[g] = variantInt[g] = true;
+							candidates.push(g);
+						}
+					}
+			if (calls)
+				calling.push(s);
+		}
+		// An int version keeps its arguments ints, and gives an int when each of its
+		//  returns does, taking the same of the ones it calls; first supposed, then
+		//  taken back until nothing changes
+		var changed = true;
+		while (changed) {
+			changed = false;
+			for (g in candidates) {
+				if (!variantOk[g])
+					continue;
+				scope = byGlobal.get(g);
+				findIntSlots(scope.pcs(), true);
+				selfCall[g] = intCalls.indexOf(g) >= 0;
+				if (!argsStayInt) {
+					variantOk[g] = variantInt[g] = false;
+					changed = true;
+				} else if (variantInt[g] && !returnsInt) {
+					variantInt[g] = false;
+					changed = true;
+				}
+			}
+		}
+		// The int versions that the functions call with ints, and that those call
+		var work = [];
+		function use(g:Int)
+			if (variantOk[g] && !variantUsed[g]) {
+				variantUsed[g] = true;
+				work.push(g);
+			}
+		for (g in candidates)
+			if (variantOk[g] && (variantInt[g] || selfCall[g])) {
+				variantEntry[g] = true;
+				use(g);
+			}
+		for (s in calling) {
+			scope = s;
+			findIntSlots(s.pcs(), false);
+			for (g in intCalls)
+				use(g);
+		}
+		while (work.length > 0) {
+			scope = byGlobal.get(work.pop());
+			findIntSlots(scope.pcs(), true);
+			for (g in intCalls)
+				use(g);
+		}
+	}
+
 	// -- Module main --
 
 	inline function call(name:String, args:Array<E>):E
@@ -408,7 +543,8 @@ class Emitter {
 	var stamp = 0;
 	var order:Array<Block>;
 
-	function writeFunction(s:Scope) {
+	// Writes a function, or its int version
+	function writeFunction(s:Scope, variant:Bool) {
 		scope = s;
 		th = local("this");
 		env = local("env", CppiaWriter.ARRAY);
@@ -428,7 +564,7 @@ class Emitter {
 		usesG = usesB = false;
 
 		buildBlocks(pcs);
-		findIntSlots(pcs);
+		findIntSlots(pcs, variant);
 
 		// Blocks written inline that end up nested too deep become cases as well
 		var cases = [];
@@ -492,12 +628,24 @@ class Emitter {
 		if (hasTraps)
 			decls.push({v: traps, init: EArrayDef([])});
 		var body:Array<E> = decls.length > 0 ? [EVars(decls)] : [];
+		if (!variant && s.global >= 0 && variantEntry[s.global]) {
+			// Given ints, the function is its int version
+			var test:E = null;
+			for (i in 0...nargs) {
+				var t = call("isInt", [v(slots[i])]);
+				test = test == null ? t : EBinop("&&", test, t);
+			}
+			var args = [v(th), v(env)].concat([for (i in 0...nargs) v(slots[i])]);
+			body.push(EIf(test, EReturn(ECallStatic(variantClass.get(s.global), 'fi${s.global}', args))));
+		}
 		body.push(dispatch);
 		body.push(EReturn(ENull));
 
-		var args = [th, env].concat(slots.slice(0, nargs));
+		var args = [th, env].concat((variant ? ints : slots).slice(0, nargs));
 		var pos = m.positions != null && s.entry < m.positions.length ? m.positions[s.entry] : null;
-		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body), fileId(pos), pos == null ? s.entry : pos.line);
+		var name = variant ? 'fi${s.global}' : functionName(s);
+		var ret = variant && variantInt[s.global] ? CppiaWriter.INT : CppiaWriter.DYNAMIC;
+		w.staticFunction(name, args, ret, EBlock(body), fileId(pos), pos == null ? s.entry : pos.line);
 	}
 
 	// The function each local was last seen used in, by id
@@ -786,7 +934,9 @@ class Emitter {
 		return n;
 	}
 
-	function findIntSlots(pcs:Array<Int>) {
+	// Finds the int regions of the current scope's function, or of its int version,
+	//  whose arguments start as ints
+	function findIntSlots(pcs:Array<Int>, argsInt:Bool) {
 		var depth = scope.depth;
 		var total = 0;
 		for (p in pcs) {
@@ -816,8 +966,9 @@ class Emitter {
 		// The arguments, and slots something other than a Push makes, such as a trap's,
 		//  hold any value
 		var nargs = scope.nargs < 0 ? 0 : scope.nargs;
-		for (k in 0...nargs)
-			intRegion[region(scope.entry, k)] = false;
+		if (!argsInt)
+			for (k in 0...nargs)
+				intRegion[region(scope.entry, k)] = false;
 		for (p in pcs) {
 			var dp = depth.get(p);
 			var isPush = p < m.codeSize && m.op(p) == Push;
@@ -854,9 +1005,25 @@ class Emitter {
 				}
 			}
 			for (p in pcs) {
-				if (p >= m.codeSize || accIsInt[p])
+				if (p >= m.codeSize)
 					continue;
-				var r = switch m.op(p) {
+				var op = m.op(p);
+				if (op == TailCall && selfTail(p)) {
+					// Calling itself in its tail, the function gives its arguments the
+					//  values above them
+					var d = depth.get(p);
+					for (i in 0...nargs) {
+						var r = region(scope.entry, i);
+						if (intRegion[r] && !intRegion[region(p, d - nargs + i)]) {
+							intRegion[r] = false;
+							changed = true;
+						}
+					}
+					continue;
+				}
+				if (accIsInt[p])
+					continue;
+				var r = switch op {
 					case Push: region(m.next(p), depth.get(p));
 					case SetStack: region(p, depth.get(p) - 1 - m.param(p));
 					default: -1;
@@ -867,7 +1034,42 @@ class Emitter {
 				}
 			}
 		}
+
+		argsStayInt = true;
+		for (k in 0...nargs)
+			if (!intRegion[region(scope.entry, k)])
+				argsStayInt = false;
+		returnsInt = true;
+		intCalls = [];
+		for (p in pcs) {
+			if (p >= m.codeSize)
+				continue;
+			switch m.op(p) {
+				case Ret:
+					if (!accIsInt[p])
+						returnsInt = false;
+				case Call | ObjCall:
+					var d = depth.get(p), n = m.param(p);
+					var top = m.op(p) == ObjCall ? d - 1 : d;
+					if (slotsInt(p, top - n, top))
+						for (g in directTargets(p))
+							intCalls.push(g);
+				default:
+			}
+		}
 	}
+
+	// Whether slots from to to at p are all ints
+	function slotsInt(p:Int, from:Int, to:Int):Bool {
+		for (k in from...to)
+			if (!intRegion[region(p, k)])
+				return false;
+		return true;
+	}
+
+	// Whether the TailCall at p is the function calling itself, which loops
+	function selfTail(p:Int):Bool
+		return scope.global >= 0 && (m.param(p) & 7) == scope.nargs && accFunction(p) == scope.global;
 
 	// Whether the accumulator holds an int after instruction p
 	function accIntAfter(p:Int):Bool {
@@ -881,6 +1083,12 @@ class Emitter {
 				accIsInt[p] && intRegion[region(p, d - 1)];
 			case Shl | Shr | UShr | Or | And | Xor | TypeOf | Hash | PhysCompare:
 				true;
+			case Call:
+				// A function called with ints whose int version gives an int
+				var g = -1, n = m.param(p);
+				for (f in directTargets(p))
+					g = f;
+				g >= 0 && variantInt[g] && slotsInt(p, d - n, d);
 			default:
 				writesAcc(p) ? false : accIsInt[p];
 		}
@@ -894,6 +1102,7 @@ class Emitter {
 			case EVar(id): intVar[id] == true;
 			case EBinop(op, _, _): INT_RESULTS.exists(op);
 			case ECallStatic(RT, f, _): INT_CALLS.exists(f);
+			case ECallStatic(_, f, _): intStatics.exists(f);
 			case EPos(_, _, x): isIntE(x);
 			default: false;
 		}
@@ -1318,7 +1527,9 @@ class Emitter {
 					var i = known.length;
 					while (i-- > 0) {
 						var f = known[i];
-						var direct = ECallStatic(classOf.get(f), 'f$f', [o, ENull].concat(args));
+						var direct = variantCall(f, o, args);
+						if (direct == null)
+							direct = ECallStatic(classOf.get(f), 'f$f', [o, ENull].concat(args));
 						if (mayTail.exists(f))
 							direct = call("finish", [direct]);
 						e = EIfElse(call("isValue", [v(acc), EArrayI(globals(), EInt(f))]), direct, e);
@@ -1465,8 +1676,21 @@ class Emitter {
 	// A call of the module's function in global f, straight to its static function. It
 	//  is the function value with no environment, as AccGlobal gives it
 	function directCall(f:Int, args:Array<E>):E {
-		var e = ECallStatic(classOf.get(f), 'f$f', [v(th), ENull].concat(args));
+		var e = variantCall(f, v(th), args);
+		if (e != null)
+			return e;
+		e = ECallStatic(classOf.get(f), 'f$f', [v(th), ENull].concat(args));
 		return mayTail.exists(f) ? call("finish", [e]) : e;
+	}
+
+	// A call of f's int version when all the arguments are ints and it has one, else null
+	function variantCall(f:Int, th:E, args:Array<E>):Null<E> {
+		if (!variantUsed[f])
+			return null;
+		for (a in args)
+			if (!isIntE(a))
+				return null;
+		return ECallStatic(variantClass.get(f), 'fi$f', [th, ENull].concat(args));
 	}
 
 	function tailCall(n:Int, d:Int, st:State, out:Array<E>, pos:Pos) {

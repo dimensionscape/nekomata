@@ -1,0 +1,58 @@
+// Values the translation types as ints, and where they stop being ints
+
+// Arithmetic wraps at 32 bits
+var big = 2147483647;
+$print(big + 1, " ", big * 2, " ", 0 - big - 2, "\n");
+
+// A loop counter and a sum
+var i = 0;
+var s = 0;
+while( i < 10 ) { s = s + i * i; i += 1; }
+$print(s, "\n");
+
+// A local that holds an int, then a string, then a float
+var x = 1;
+x = x + 1;
+x = "str" + x;
+$print(x, "\n");
+x = 3;
+x = x / 2;
+$print(x, " ", $typeof(x), "\n");
+
+// Division gives a float, the remainder an int
+$print(7 / 2, " ", 7 % 3, " ", -7 % 3, " ", 7 % -3, "\n");
+
+// Shifts and bit operations
+$print(1 << 31, " ", -8 >> 1, " ", -8 >>> 28, " ", 6 & 3, " ", 6 | 3, " ", 6 ^ 3, "\n");
+
+// Comparisons of ints with other values
+$print(1 < 1.5, " ", 2 == 2.0, " ", 3 > "a", " ", 4 != null, " ", 5 <= 5, "\n");
+
+// A function given ints, floats and strings
+fib = function(n) { if( n <= 1 ) return n; return fib(n - 1) + fib(n - 2); }
+$print(fib(20), " ", fib(2.5), " ", fib(1.0), "\n");
+
+// Calling itself in its tail with values that stop being ints
+sum = function(n, acc) { if( n == 0 ) return acc; return sum(n - 1, acc + n); }
+$print(sum(100, 0), " ", sum(3, "s"), " ", sum(3, 0.5), "\n");
+
+// An int function whose result is not always an int
+half = function(n) { if( n % 2 == 0 ) return n / 2; return n; }
+$print(half(4), " ", half(5), " ", $typeof(half(4)), "\n");
+
+// Remainder by zero
+try $print(5 % 0) catch e $print("caught ", e, "\n");
+var zero = 0;
+try $print(5 % zero) catch e $print("caught ", e, "\n");
+
+// Array reads and writes at int indexes
+var a = $amake(5);
+i = 0;
+while( i < 5 ) { a[i] = i * 2; i += 1; }
+$print(a[3], " ", a[10], " ", a[-1], "\n");
+
+// Ints passed where any value goes
+var o = $new(null);
+i = 0;
+while( i < 300 ) { o.v = i; i += 1; }
+$print(o.v, " ", $array(i, i + 1), "\n");
