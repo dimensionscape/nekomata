@@ -39,8 +39,10 @@ haxelib dev hxcpp path/to/libhxcpp
 haxe build.hxml
 ```
 
-Then `bin/host/nekomata path/to/module.n` runs a module, `-jit` turns on cppia's JIT,
-and `--emit out.cppia` saves the generated cppia.
+Then `bin/host/nekomata path/to/module.n` runs a module under cppia's JIT, which
+compiles each function when it is first called. `-interp` (or `NEKOMATA_JIT=0`, for
+when the host stands in for neko and takes no options) runs it in cppia's interpreter
+instead, and `--emit out.cppia` saves the generated cppia.
 
 The host keeps each module it translates in a cache, so the next run loads the cppia
 without translating again. Entries are keyed by a hash of the bytecode, the module's
