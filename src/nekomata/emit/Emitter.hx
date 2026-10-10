@@ -565,6 +565,8 @@ class Emitter {
 
 		buildBlocks(pcs);
 		findIntSlots(pcs, variant);
+		if (hasTraps)
+			findTrapped(pcs);
 
 		// Blocks written inline that end up nested too deep become cases as well
 		var cases = [];
@@ -1059,6 +1061,32 @@ class Emitter {
 		}
 	}
 
+	// For a function with traps: how many of each instruction's slots a trap handler
+	//  reads when what runs there throws, as a trap is set over them. A trap's own
+	//  slots make a region, which is where the trap is set
+	var trappedBelow:Array<Int> = [];
+
+	function findTrapped(pcs:Array<Int>) {
+		var traps = [];
+		for (p in pcs)
+			if (p < m.codeSize && m.op(p) == Trap) {
+				var d = scope.depth.get(p);
+				traps.push({depth: d, region: region(m.next(p), d)});
+			}
+		for (p in pcs) {
+			var below = 0, d = scope.depth.get(p);
+			for (t in traps)
+				if (t.depth > below && t.depth < d && region(p, t.depth) == t.region)
+					below = t.depth;
+			trappedBelow[p] = below;
+		}
+	}
+
+	// Whether a trap handler reads slot k at instruction p, so that it is kept in its
+	//  local rather than pending
+	inline function trapped(p:Int, k:Int):Bool
+		return hasTraps && k < trappedBelow[p];
+
 	// Whether slots from to to at p are all ints
 	function slotsInt(p:Int, from:Int, to:Int):Bool {
 		for (k in from...to)
@@ -1336,13 +1364,14 @@ class Emitter {
 		var a = st.acc;
 		var l = slotLocal(at, k);
 		var id = l.id;
-		if (a == null && !hasTraps)
+		var kept = trapped(at, k);
+		if (a == null && !kept)
 			a = Pending.ofLocal(acc.id, v(acc));
 		if (a != null && a.kind == LOCAL && a.local == id) {
 			st.slots[k] = null;
 			return;
 		}
-		if (a != null && a.kind != EFFECT && !hasTraps) {
+		if (a != null && a.kind != EFFECT && !kept) {
 			release(st, id, out);
 			st.slots[k] = a;
 			return;
@@ -1551,11 +1580,15 @@ class Emitter {
 				out.push(EPos(pos.file, pos.line, EReturn(e)));
 				return true;
 			case Trap:
-				// An effect pending happens before the trap is set
+				// An effect pending happens before the trap is set, and the slots its
+				//  handler reads are in their locals from then on
 				if (liveAfter)
 					materializeAcc(st, out);
 				else
 					dropAcc(st, out);
+				for (k in 0...d)
+					if (st.slots[k] != null)
+						materializeSlot(st, k, out);
 				out.push(EPos(pos.file, pos.line, call("trapPush", [v(traps), EInt(m.target(p)), v(th)])));
 			case EndTrap:
 				if (liveAfter)
