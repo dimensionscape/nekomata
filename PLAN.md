@@ -294,10 +294,35 @@ sqlite; the VM functions with a library that needs them (mod_neko, ui).
 - Measured on Windows, CPU time: fib(30) 391 ms interpreted and 94 ms with the JIT, from
   1109 and 438 (neko 94); haxelib's `run.n version` 47 ms with the cache and 172 ms
   without, from 547; Haxe's unit tests 1.5 s with the cache, from 7.5 s (neko 0.34 s).
-- Next: typed int locals for slots whose values are always ints, found from def-use
-  webs, so loop counters and indexes use cppia's own arithmetic; float results used at
-  once without an `NFloat`; bytecode calls without the Dynamic closure call; and
-  translating each function when it is first called, so big programs load less.
+## Notes from milestone 9
+
+- Objects keep their fields as neko's objtable does: the field hashes in order with
+  their values beside them, scanned when there are few and searched by halves past
+  eight. Keys come out in order without sorting, and copying an object copies two arrays.
+- A pushed value stays in its stack slot until it is popped, and neko's fixed depths
+  make the code it lives through a region: the slot at each instruction, joined across
+  each step and jump that keeps it. A region whose every value is an int is an `int`
+  local, found by supposing every region holds ints and taking that back for any region
+  given a value that may not be one. Arithmetic, bit operations and comparisons on two
+  ints are cppia's own, and an int on one side of a runtime operation or array access
+  goes in unboxed.
+- A module function that code calls directly gets an int version, which takes ints and
+  gives an int when each of its returns does, found over the whole module the same way.
+  Calls with int arguments go to it, and a function whose int version gives an int or
+  calls itself with ints checks its arguments on entry and runs as that version.
+- libhxcpp's JIT compiles each script function when it is first called, so the JIT is
+  the host's default: haxelib's `run.n` loads in 74 ms under it, where compiling all of
+  it took 139 ms, and `-interp` or `NEKOMATA_JIT=0` gives the interpreter. Compiling
+  what runs costs short programs a little: `run.n version` runs for 37 ms under the JIT
+  and 11 ms interpreted, not counting the `haxe` it starts.
+- Measured on Windows against neko, wall clock with the cache: fib 45 ms (neko 101),
+  nsieve 18 (16), nbodies 45 (50), recursive 402 (259), binary-trees 69 (32), Haxe's fib
+  1003 (699). Loops on locals run 6 to 25 times faster than neko's, and Haxe code still
+  runs 1.5 to 6 times slower, as its values pass through fields and methods as Dynamic.
+- Next: compiling a function after a few calls rather than its first, so short programs
+  pay nothing for the JIT; floats in locals of their own, boxed as an `NFloat` only
+  where one is needed, since hxcpp boxes an integral Float as an Int; typed module
+  globals; and fewer runtime calls for field reads and method calls.
 
 ## Open questions
 

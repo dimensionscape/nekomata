@@ -32,13 +32,17 @@ check() {
    for host in "${HOSTS[@]}"; do
       local label
       label=$(basename "$host" .exe)
-      for mode in "" "-jit"; do
-         local got
+      # The Nekomata host runs the JIT unless told not to, the stock host the interpreter
+      local modes=("-interp" "-jit")
+      [ "$label" = "Cppia" ] && modes=("" "-jit")
+      for mode in "${modes[@]}"; do
+         local got how=${mode:-interp}
+         how=${how#-}
          got=$(run "$host" $mode "$module" "$@")
          if [ "$got" = "$expected" ]; then
-            echo "ok   $name $label ${mode:-interp}"
+            echo "ok   $name $label $how"
          else
-            echo "FAIL $name $label ${mode:-interp}"
+            echo "FAIL $name $label $how"
             diff <(echo "$expected") <(echo "$got") | head -10 | sed 's/^/       /'
             failures=$((failures + 1))
          fi

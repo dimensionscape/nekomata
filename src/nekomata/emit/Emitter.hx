@@ -40,7 +40,31 @@ class Emitter {
 	var pc:Local;
 	var traps:Local;
 	var slots:Array<Local>;
+	// The int locals of the slots, for where a slot holds only ints
+	var ints:Array<Local>;
 	var scope:Scope;
+	// The instruction being written
+	var curPc = 0;
+	// Which locals are ints, by id
+	var intVar:Array<Bool> = [];
+
+	// Int versions of the module's functions, which take ints for all their arguments
+	//  and are what calls with int arguments call. By global: whether a function has
+	//  one, whether it gives an int, and whether any code calls it
+	var variantOk:Array<Bool>;
+	var variantInt:Array<Bool>;
+	var variantUsed:Array<Bool>;
+	// Functions that go to their int version when they are given ints, as one that
+	//  gives an int or calls itself with ints is worth it
+	var variantEntry:Array<Bool>;
+	var variantClass = new Map<Int, String>();
+	// The int versions that give an int, by name
+	var intStatics = new Map<String, Bool>();
+	// What the last analysis of a function found: whether its arguments stayed ints,
+	//  whether every return gives an int, and the functions it calls with int arguments
+	var argsStayInt = true;
+	var returnsInt = true;
+	var intCalls:Array<Int> = [];
 	var hasTraps:Bool;
 
 	// Module analysis
@@ -71,8 +95,21 @@ class Emitter {
 	static final loaderHash = nekomata.neko.Hash.field("loader");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
-	// The operations the runtime has a version of with an int on the right
-	static final INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq"]) op => true];
+	// The operations the runtime has a version of with an int on the right, named with
+	//  an I after, and with an int on the left, named with an i before
+	static final INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq", "aget"]) op => true];
+	static final LEFT_INT_OPS = [for (op in ["add", "sub", "lt", "lte", "gt", "gte", "eq", "neq"]) op => true];
+
+	// The operations that are cppia's own on two ints, as neko does them on its ints
+	static final NATIVE_OPS = [
+		"add" => "+", "sub" => "-", "mult" => "*", "shl" => "<<", "shr" => ">>", "ushr" => ">>>", "or" => "|", "and" => "&", "xor" => "^",
+		"eq" => "==", "neq" => "!=", "lt" => "<", "lte" => "<=", "gt" => ">", "gte" => ">="
+	];
+	// The cppia operators and the runtime functions that give an int
+	static final INT_RESULTS = [for (op in ["+", "-", "*", "<<", ">>", ">>>", "|", "&", "^"]) op => true];
+	static final INT_CALLS = [
+		for (f in ["shl", "shr", "ushr", "or", "and", "xor", "modInt", "typeOf", "hash", "physCompare"]) f => true
+	];
 
 	// Builtins that run no neko code, with the runtime function that does each
 	static final LEAF_BUILTINS:Map<Int, {cls:String, fn:String, nargs:Int, isBool:Bool, canThrow:Bool}> = [
@@ -130,8 +167,11 @@ class Emitter {
 		w = new CppiaWriter();
 	}
 
-	function local(name:String, type = CppiaWriter.DYNAMIC):Local
-		return {name: name, id: nextVar++, type: type};
+	function local(name:String, type = CppiaWriter.DYNAMIC):Local {
+		var l = {name: name, id: nextVar++, type: type};
+		intVar[l.id] = type == CppiaWriter.INT;
+		return l;
+	}
 
 	// hxcpp passes stack frames as class::method::file::line, and Haxe's debug info names
 	//  positions like Class::method, so the separator is escaped; NekoStack restores it.
@@ -165,12 +205,21 @@ class Emitter {
 	function run():haxe.io.Bytes {
 		scopes = StackCheck.run(m);
 		analyse();
+		findVariants();
 		// cppia finds a static function by looking through its class's functions one
 		//  by one, so the functions go in classes of CHUNK at most, the first with the
-		//  module's statics
+		//  module's statics, and the int versions in classes after them
 		for (k in 0...scopes.length)
 			if (scopes[k].global >= 0)
 				classOf.set(scopes[k].global, chunkClass(Std.int(k / CHUNK)));
+		var variants = [for (s in scopes) if (s.global >= 0 && variantUsed[s.global]) s];
+		var firstVariantChunk = Std.int((scopes.length + CHUNK - 1) / CHUNK);
+		for (k in 0...variants.length) {
+			var g = variants[k].global;
+			variantClass.set(g, chunkClass(firstVariantChunk + Std.int(k / CHUNK)));
+			if (variantInt[g])
+				intStatics.set('fi$g', true);
+		}
 		var k = 0;
 		while (k < scopes.length) {
 			var n = scopes.length - k < CHUNK ? scopes.length - k : CHUNK;
@@ -182,7 +231,15 @@ class Emitter {
 			} else
 				w.beginClass(chunkClass(Std.int(k / CHUNK)), n);
 			for (i in k...k + n)
-				writeFunction(scopes[i]);
+				writeFunction(scopes[i], false);
+			k += n;
+		}
+		k = 0;
+		while (k < variants.length) {
+			var n = variants.length - k < CHUNK ? variants.length - k : CHUNK;
+			w.beginClass(chunkClass(firstVariantChunk + Std.int(k / CHUNK)), n);
+			for (i in k...k + n)
+				writeFunction(variants[i], true);
 			k += n;
 		}
 		gLocal = null;
@@ -310,6 +367,106 @@ class Emitter {
 			default: -2;
 		}
 
+	// The module functions a Call or ObjCall at p can call directly: for a Call, the
+	//  function an AccGlobal just before gives; for an ObjCall, the functions the
+	//  module stores in the field an AccField just before reads
+	function directTargets(p:Int):Array<Int> {
+		var n = m.param(p);
+		switch m.op(p) {
+			case Call:
+				var f = accFunction(p);
+				if (f >= 0 && functionArgs(f) == n && constantGlobal(m.param(p - 2), scope.global < 0))
+					return [f];
+			case ObjCall:
+				if (!targets[p] && p >= 2 && m.isOp[p - 2] && m.op(p - 2) == AccField) {
+					var fs = fieldFunctions.get(m.param(p - 2));
+					if (fs != null)
+						return [for (f in fs) if (functionArgs(f) == n) f];
+				}
+			default:
+		}
+		return [];
+	}
+
+	// Which functions get an int version, which give an int, and which are called
+	function findVariants() {
+		var n = m.globals.length;
+		variantOk = [for (_ in 0...n) false];
+		variantInt = [for (_ in 0...n) false];
+		variantUsed = [for (_ in 0...n) false];
+		variantEntry = [for (_ in 0...n) false];
+		var selfCall = [for (_ in 0...n) false];
+		var byGlobal = new Map<Int, Scope>();
+		for (s in scopes)
+			if (s.global >= 0)
+				byGlobal.set(s.global, s);
+		// The functions code calls directly, which take arguments and give their result
+		//  back themselves, rather than a tail call for the caller to make
+		var candidates = [];
+		var calling = [];
+		for (s in scopes) {
+			scope = s;
+			var calls = false;
+			for (p in s.pcs())
+				if (p < m.codeSize && (m.op(p) == Call || m.op(p) == ObjCall))
+					for (g in directTargets(p)) {
+						calls = true;
+						var nargs = functionArgs(g);
+						if (!variantOk[g] && nargs >= 1 && !mayTail.exists(g) && byGlobal.exists(g)) {
+							variantOk[g] = variantInt[g] = true;
+							candidates.push(g);
+						}
+					}
+			if (calls)
+				calling.push(s);
+		}
+		// An int version keeps its arguments ints, and gives an int when each of its
+		//  returns does, taking the same of the ones it calls; first supposed, then
+		//  taken back until nothing changes
+		var changed = true;
+		while (changed) {
+			changed = false;
+			for (g in candidates) {
+				if (!variantOk[g])
+					continue;
+				scope = byGlobal.get(g);
+				findIntSlots(scope.pcs(), true);
+				selfCall[g] = intCalls.indexOf(g) >= 0;
+				if (!argsStayInt) {
+					variantOk[g] = variantInt[g] = false;
+					changed = true;
+				} else if (variantInt[g] && !returnsInt) {
+					variantInt[g] = false;
+					changed = true;
+				}
+			}
+		}
+		// The int versions that the functions call with ints, and that those call
+		var work = [];
+		function use(g:Int)
+			if (variantOk[g] && !variantUsed[g]) {
+				variantUsed[g] = true;
+				work.push(g);
+			}
+		for (g in candidates)
+			if (variantOk[g] && (variantInt[g] || selfCall[g])) {
+				variantEntry[g] = true;
+				use(g);
+			}
+		for (s in calling) {
+			scope = s;
+			findIntSlots(s.pcs(), false);
+			for (g in intCalls)
+				use(g);
+		}
+		while (work.length > 0) {
+			scope = byGlobal.get(work.pop());
+			findIntSlots(scope.pcs(), true);
+			for (g in intCalls)
+				use(g);
+		}
+	}
+
 	// -- Module main --
 
 	inline function call(name:String, args:Array<E>):E
@@ -386,12 +543,14 @@ class Emitter {
 	var stamp = 0;
 	var order:Array<Block>;
 
-	function writeFunction(s:Scope) {
+	// Writes a function, or its int version
+	function writeFunction(s:Scope, variant:Bool) {
 		scope = s;
 		th = local("this");
 		env = local("env", CppiaWriter.ARRAY);
 		var nargs = s.nargs < 0 ? 0 : s.nargs;
 		slots = [for (i in 0...s.maxDepth + 1) local('s$i')];
+		ints = [for (i in 0...s.maxDepth + 1) local('i$i', CppiaWriter.INT)];
 		acc = local("acc");
 		pc = local("pc", CppiaWriter.INT);
 		var pcs = s.pcs();
@@ -405,6 +564,7 @@ class Emitter {
 		usesG = usesB = false;
 
 		buildBlocks(pcs);
+		findIntSlots(pcs, variant);
 
 		// Blocks written inline that end up nested too deep become cases as well
 		var cases = [];
@@ -460,18 +620,32 @@ class Emitter {
 			decls.push({v: gLocal, init: EStatic(cls, "G")});
 		if (usesB)
 			decls.push({v: bLocal, init: EStatic(cls, "B")});
-		for (i in nargs...slots.length)
+		for (i in nargs...slots.length) {
 			declare(slots[i], null);
+			declare(ints[i], null);
+		}
 		declare(pc, EInt(s.entry));
 		if (hasTraps)
 			decls.push({v: traps, init: EArrayDef([])});
 		var body:Array<E> = decls.length > 0 ? [EVars(decls)] : [];
+		if (!variant && s.global >= 0 && variantEntry[s.global]) {
+			// Given ints, the function is its int version
+			var test:E = null;
+			for (i in 0...nargs) {
+				var t = call("isInt", [v(slots[i])]);
+				test = test == null ? t : EBinop("&&", test, t);
+			}
+			var args = [v(th), v(env)].concat([for (i in 0...nargs) v(slots[i])]);
+			body.push(EIf(test, EReturn(ECallStatic(variantClass.get(s.global), 'fi${s.global}', args))));
+		}
 		body.push(dispatch);
 		body.push(EReturn(ENull));
 
-		var args = [th, env].concat(slots.slice(0, nargs));
+		var args = [th, env].concat((variant ? ints : slots).slice(0, nargs));
 		var pos = m.positions != null && s.entry < m.positions.length ? m.positions[s.entry] : null;
-		w.staticFunction(functionName(s), args, CppiaWriter.DYNAMIC, EBlock(body), fileId(pos), pos == null ? s.entry : pos.line);
+		var name = variant ? 'fi${s.global}' : functionName(s);
+		var ret = variant && variantInt[s.global] ? CppiaWriter.INT : CppiaWriter.DYNAMIC;
+		w.staticFunction(name, args, ret, EBlock(body), fileId(pos), pos == null ? s.entry : pos.line);
 	}
 
 	// The function each local was last seen used in, by id
@@ -484,7 +658,7 @@ class Emitter {
 			case EBlock(es) | ECallStatic(_, _, es) | EArrayDef(es):
 				for (x in es)
 					markUsed(x);
-			case ESet(a, b) | EArrayI(a, b) | EIf(a, b) | EWhile(a, b) | ELess(a, b):
+			case ESet(a, b) | EArrayI(a, b) | EIf(a, b) | EWhile(a, b) | EBinop(_, a, b):
 				markUsed(a);
 				markUsed(b);
 			case EIfElse(a, b, c):
@@ -514,7 +688,7 @@ class Emitter {
 		if (!jit || cases.length <= JIT_SWITCH)
 			return ESwitch(v(pc), cases);
 		var half = cases.length >> 1;
-		return EIfElse(ELess(v(pc), EInt(cases[half].value)), switchOn(cases.slice(0, half)), switchOn(cases.slice(half)));
+		return EIfElse(EBinop("<", v(pc), EInt(cases[half].value)), switchOn(cases.slice(0, half)), switchOn(cases.slice(half)));
 	}
 
 	var lastFile:String = null;
@@ -705,6 +879,235 @@ class Emitter {
 		}
 	}
 
+	// -- Int slots --
+	//
+	// A value pushed on the stack stays in its slot until it is popped, and neko's fixed
+	//  depths make the code it lives through a region: the slot at the instructions it
+	//  reaches, joined across each jump and step that keeps the slot. Where every value a
+	//  region is given is an int, the slot is an int local there, and an operation on two
+	//  such ints is cppia's own
+
+	// Where instruction p's slots start among the regions, and the regions as sets joined
+	//  by their parents
+	var regionBase:Array<Int> = [];
+	var regionParent:Array<Int> = [];
+	var intRegion:Array<Bool> = [];
+	// Whether the accumulator holds an int before each instruction
+	var accIsInt:Array<Bool> = [];
+	var succBuf:Array<Int> = [];
+
+	function region(p:Int, k:Int):Int {
+		var x = regionBase[p] + k;
+		var r = x;
+		while (regionParent[r] != r)
+			r = regionParent[r];
+		while (regionParent[x] != r) {
+			var n = regionParent[x];
+			regionParent[x] = r;
+			x = n;
+		}
+		return r;
+	}
+
+	// The local that holds slot k at instruction p
+	function slotLocal(p:Int, k:Int):Local
+		return intRegion[region(p, k)] ? ints[k] : slots[k];
+
+	// The instructions p goes on to, into buf; how many there are
+	function successors(p:Int, buf:Array<Int>):Int {
+		if (p >= m.codeSize)
+			return 0;
+		var n = 0;
+		switch m.op(p) {
+			case Jump:
+				buf[n++] = m.target(p);
+			case JumpIf | JumpIfNot | Trap:
+				buf[n++] = m.target(p);
+				buf[n++] = m.next(p);
+			case JumpTable:
+				for (k in 0...m.param(p) + 1)
+					buf[n++] = p + 2 + 2 * k;
+			case Ret | TailCall:
+			default:
+				buf[n++] = m.next(p);
+		}
+		return n;
+	}
+
+	// Finds the int regions of the current scope's function, or of its int version,
+	//  whose arguments start as ints
+	function findIntSlots(pcs:Array<Int>, argsInt:Bool) {
+		var depth = scope.depth;
+		var total = 0;
+		for (p in pcs) {
+			regionBase[p] = total;
+			total += depth.get(p);
+		}
+		for (i in 0...total) {
+			regionParent[i] = i;
+			intRegion[i] = true;
+		}
+		var buf = succBuf;
+		for (p in pcs) {
+			var dp = depth.get(p);
+			for (j in 0...successors(p, buf)) {
+				var q = buf[j];
+				var common = depth.get(q);
+				if (dp < common)
+					common = dp;
+				for (k in 0...common) {
+					var a = region(p, k), b = region(q, k);
+					if (a != b)
+						regionParent[a] = b;
+				}
+			}
+		}
+
+		// The arguments, and slots something other than a Push makes, such as a trap's,
+		//  hold any value
+		var nargs = scope.nargs < 0 ? 0 : scope.nargs;
+		if (!argsInt)
+			for (k in 0...nargs)
+				intRegion[region(scope.entry, k)] = false;
+		for (p in pcs) {
+			var dp = depth.get(p);
+			var isPush = p < m.codeSize && m.op(p) == Push;
+			for (j in 0...successors(p, buf)) {
+				var q = buf[j];
+				for (k in (isPush ? dp + 1 : dp)...depth.get(q))
+					intRegion[region(q, k)] = false;
+			}
+		}
+
+		// Then what the accumulator holds and what each region is given, until no region
+		//  stops being an int one. Starting from ints everywhere, the accumulator holds
+		//  any value at the entry and in a trap's handler
+		for (p in pcs)
+			accIsInt[p] = true;
+		accIsInt[scope.entry] = false;
+		for (p in pcs)
+			if (p < m.codeSize && m.op(p) == Trap)
+				accIsInt[m.target(p)] = false;
+		var changed = true;
+		while (changed) {
+			changed = false;
+			var work = pcs.copy();
+			while (work.length > 0) {
+				var p = work.pop();
+				if (p >= m.codeSize || accIntAfter(p))
+					continue;
+				for (j in 0...successors(p, buf)) {
+					var q = buf[j];
+					if (accIsInt[q]) {
+						accIsInt[q] = false;
+						work.push(q);
+					}
+				}
+			}
+			for (p in pcs) {
+				if (p >= m.codeSize)
+					continue;
+				var op = m.op(p);
+				if (op == TailCall && selfTail(p)) {
+					// Calling itself in its tail, the function gives its arguments the
+					//  values above them
+					var d = depth.get(p);
+					for (i in 0...nargs) {
+						var r = region(scope.entry, i);
+						if (intRegion[r] && !intRegion[region(p, d - nargs + i)]) {
+							intRegion[r] = false;
+							changed = true;
+						}
+					}
+					continue;
+				}
+				if (accIsInt[p])
+					continue;
+				var r = switch op {
+					case Push: region(m.next(p), depth.get(p));
+					case SetStack: region(p, depth.get(p) - 1 - m.param(p));
+					default: -1;
+				}
+				if (r >= 0 && intRegion[r]) {
+					intRegion[r] = false;
+					changed = true;
+				}
+			}
+		}
+
+		argsStayInt = true;
+		for (k in 0...nargs)
+			if (!intRegion[region(scope.entry, k)])
+				argsStayInt = false;
+		returnsInt = true;
+		intCalls = [];
+		for (p in pcs) {
+			if (p >= m.codeSize)
+				continue;
+			switch m.op(p) {
+				case Ret:
+					if (!accIsInt[p])
+						returnsInt = false;
+				case Call | ObjCall:
+					var d = depth.get(p), n = m.param(p);
+					var top = m.op(p) == ObjCall ? d - 1 : d;
+					if (slotsInt(p, top - n, top))
+						for (g in directTargets(p))
+							intCalls.push(g);
+				default:
+			}
+		}
+	}
+
+	// Whether slots from to to at p are all ints
+	function slotsInt(p:Int, from:Int, to:Int):Bool {
+		for (k in from...to)
+			if (!intRegion[region(p, k)])
+				return false;
+		return true;
+	}
+
+	// Whether the TailCall at p is the function calling itself, which loops
+	function selfTail(p:Int):Bool
+		return scope.global >= 0 && (m.param(p) & 7) == scope.nargs && accFunction(p) == scope.global;
+
+	// Whether the accumulator holds an int after instruction p
+	function accIntAfter(p:Int):Bool {
+		var d = scope.depth.get(p);
+		return switch m.op(p) {
+			case AccInt:
+				true;
+			case AccStack | AccStack0 | AccStack1:
+				intRegion[region(p, d - 1 - m.slot(p))];
+			case Add | Sub | Mult | Mod:
+				accIsInt[p] && intRegion[region(p, d - 1)];
+			case Shl | Shr | UShr | Or | And | Xor | TypeOf | Hash | PhysCompare:
+				true;
+			case Call:
+				// A function called with ints whose int version gives an int
+				var g = -1, n = m.param(p);
+				for (f in directTargets(p))
+					g = f;
+				g >= 0 && variantInt[g] && slotsInt(p, d - n, d);
+			default:
+				writesAcc(p) ? false : accIsInt[p];
+		}
+	}
+
+	// Whether e is an int in cppia's types: an int constant or local, or what cppia's
+	//  int operations or the runtime's int functions give
+	function isIntE(e:E):Bool {
+		return switch e {
+			case EInt(_): true;
+			case EVar(id): intVar[id] == true;
+			case EBinop(op, _, _): INT_RESULTS.exists(op);
+			case ECallStatic(RT, f, _): INT_CALLS.exists(f);
+			case ECallStatic(_, f, _): intStatics.exists(f);
+			case EPos(_, _, x): isIntE(x);
+			default: false;
+		}
+	}
+
 	// -- Writing code --
 
 	// Writes block b and the blocks written inline after it, starting from state st
@@ -712,6 +1115,7 @@ class Emitter {
 		var live = accLiveAfter(b);
 		for (k in 0...b.code.length) {
 			var p = b.code[k];
+			curPc = p;
 			if (p >= m.codeSize) {
 				// The module body ends with neko's Last, returning the accumulator
 				var pos = position(p);
@@ -749,7 +1153,7 @@ class Emitter {
 			return;
 		}
 		b.inlined = false;
-		flush(st, out, scope.depth.get(t), b.accIn);
+		flush(st, out, t, b.accIn);
 		jumpTo(t, out);
 	}
 
@@ -773,11 +1177,12 @@ class Emitter {
 		out.push(wrapped ? EBreak : EContinue);
 	}
 
-	// Puts the state in locals: the slots below depth, and the accumulator when it is read
-	function flush(st:State, out:Array<E>, depth:Int, accLive:Bool) {
-		for (k in 0...depth)
+	// Puts the state in locals as instruction t has them: its slots, and the accumulator
+	//  when it is read
+	function flush(st:State, out:Array<E>, t:Int, accLive:Bool) {
+		for (k in 0...scope.depth.get(t))
 			if (st.slots[k] != null)
-				materializeSlot(st, k, out);
+				materializeSlot(st, k, out, t);
 		if (accLive)
 			materializeAcc(st, out);
 		else
@@ -826,15 +1231,17 @@ class Emitter {
 			case ENot(x) | EIsNull(x) | ENotNull(x) | EPos(_, _, x): reads(x, id);
 			case ESet(l, r): reads(l, id) || reads(r, id);
 			case EIfElse(c, a, b): reads(c, id) || reads(a, id) || reads(b, id);
-			case ELess(a, b): reads(a, id) || reads(b, id);
+			case EBinop(_, a, b): reads(a, id) || reads(b, id);
 			default: false;
 		}
 	}
 
-	function materializeSlot(st:State, k:Int, out:Array<E>) {
+	// Writes slot k's pending value to its local, as instruction at has it, by default
+	//  the one being written
+	function materializeSlot(st:State, k:Int, out:Array<E>, at = -1) {
 		var s = st.slots[k];
 		st.slots[k] = null;
-		out.push(ESet(v(slots[k]), s.e));
+		out.push(ESet(v(slotLocal(at < 0 ? curPc : at, k)), s.e));
 	}
 
 	function materializeAcc(st:State, out:Array<E>) {
@@ -900,12 +1307,15 @@ class Emitter {
 	// The value of stack slot k
 	function slotValue(st:State, k:Int):E {
 		var s = st.slots[k];
-		return s == null ? v(slots[k]) : s.e;
+		return s == null ? v(slotLocal(curPc, k)) : s.e;
 	}
 
 	function slotPending(st:State, k:Int):Pending {
 		var s = st.slots[k];
-		return s != null ? s : Pending.ofLocal(slots[k].id, v(slots[k]));
+		if (s != null)
+			return s;
+		var l = slotLocal(curPc, k);
+		return Pending.ofLocal(l.id, v(l));
 	}
 
 	// The n slots below the top, deepest first
@@ -919,11 +1329,13 @@ class Emitter {
 	inline function effect(e:E, pos:Pos, canThrow = true, isBool = false):Pending
 		return Pending.ofEffect(e, pos.file, pos.line, canThrow || pos.throws, isBool);
 
-	// Puts the accumulator's value in slot k: kept pending when it is a constant or a
-	//  local, else written to the slot's local, which the accumulator then reads
-	function setSlot(st:State, k:Int, out:Array<E>, pos:Pos) {
+	// Puts the accumulator's value in slot k, as instruction at has it: kept pending when
+	//  it is a constant or a local, else written to the slot's local, which the
+	//  accumulator then reads
+	function setSlot(st:State, k:Int, out:Array<E>, pos:Pos, at:Int) {
 		var a = st.acc;
-		var id = slots[k].id;
+		var l = slotLocal(at, k);
+		var id = l.id;
 		if (a == null && !hasTraps)
 			a = Pending.ofLocal(acc.id, v(acc));
 		if (a != null && a.kind == LOCAL && a.local == id) {
@@ -939,9 +1351,9 @@ class Emitter {
 		var wasEffect = st.acc == null && a != null && a.kind == EFFECT;
 		release(st, id, out, true);
 		st.slots[k] = null;
-		out.push(EPos(pos.file, pos.line, ESet(v(slots[k]), e)));
+		out.push(EPos(pos.file, pos.line, ESet(v(l), e)));
 		if (wasEffect)
-			st.acc = Pending.ofLocal(id, v(slots[k]));
+			st.acc = Pending.ofLocal(id, v(l));
 	}
 
 	// Writes local l, which is not a slot, with what pending reads it put in locals first
@@ -961,11 +1373,27 @@ class Emitter {
 			var a = slotValue(st, d - 1);
 			var b = consumeAcc(st, out, pos, canThrow);
 			pop(st, d - 1, d);
-			// With an int constant on the right, the runtime takes the int as it is
-			var e = switch b {
-				case EInt(_) if (INT_OPS.exists(name)): call(name + "I", [a, b]);
-				default: call(name, [a, b]);
+			if (isIntE(a) && isIntE(b)) {
+				// Two ints: cppia's own operation, and a remainder that only checks for zero
+				var native = NATIVE_OPS.get(name);
+				if (native != null) {
+					var r = effect(EBinop(native, a, b), pos, false, isBool);
+					r.droppable = !r.canThrow;
+					setAcc(st, out, r);
+					return;
+				}
+				if (name == "mod") {
+					setAcc(st, out, effect(call("modInt", [a, b]), pos));
+					return;
+				}
 			}
+			// With an int on one side, the runtime takes the int as it is
+			var e = if (INT_OPS.exists(name) && isIntE(b))
+				call(name + "I", [a, b]);
+			else if (LEFT_INT_OPS.exists(name) && isIntE(a))
+				call("i" + name, [a, b]);
+			else
+				call(name, [a, b]);
 			setAcc(st, out, effect(e, pos, canThrow, isBool));
 		}
 		function unary(make:E->E, canThrow:Bool, isBool = false) {
@@ -1009,7 +1437,7 @@ class Emitter {
 			case AccArray:
 				binary("aget");
 			case AccIndex | AccIndex0 | AccIndex1:
-				unary(a -> call("aget", [a, EInt(m.slot(p))]), true);
+				unary(a -> call("agetI", [a, EInt(m.slot(p))]), true);
 			case AccBuiltin:
 				if (param == loaderHash || param == exportsHash || builtinExists == null || builtinExists(param))
 				{
@@ -1020,9 +1448,9 @@ class Emitter {
 				else
 					setAcc(st, out, effect(ECallStatic(BUILTINS, "get", [EInt(param)]), pos));
 			case SetStack:
-				setSlot(st, d - 1 - param, out, pos);
+				setSlot(st, d - 1 - param, out, pos, p);
 			case Push:
-				setSlot(st, d, out, pos);
+				setSlot(st, d, out, pos, m.next(p));
 			case SetGlobal:
 				var e = readAcc(st, out, pos, false, liveAfter);
 				out.push(EPos(pos.file, pos.line, ESet(EArrayI(globals(), EInt(param)), e)));
@@ -1036,11 +1464,11 @@ class Emitter {
 			case SetArray:
 				var a = slotValue(st, d - 1), i = slotValue(st, d - 2);
 				var e = readAcc(st, out, pos, true, liveAfter);
-				out.push(EPos(pos.file, pos.line, call("aset", [a, i, e])));
+				out.push(EPos(pos.file, pos.line, call(isIntE(i) ? "asetI" : "aset", [a, i, e])));
 			case SetIndex:
 				var a = slotValue(st, d - 1);
 				var e = readAcc(st, out, pos, true, liveAfter);
-				out.push(EPos(pos.file, pos.line, call("aset", [a, EInt(param), e])));
+				out.push(EPos(pos.file, pos.line, call("asetI", [a, EInt(param), e])));
 			case SetThis:
 				var a = st.acc;
 				if (a != null && a.kind == LOCAL && a.local == th.id)
@@ -1099,7 +1527,9 @@ class Emitter {
 					var i = known.length;
 					while (i-- > 0) {
 						var f = known[i];
-						var direct = ECallStatic(classOf.get(f), 'f$f', [o, ENull].concat(args));
+						var direct = variantCall(f, o, args);
+						if (direct == null)
+							direct = ECallStatic(classOf.get(f), 'f$f', [o, ENull].concat(args));
 						if (mayTail.exists(f))
 							direct = call("finish", [direct]);
 						e = EIfElse(call("isValue", [v(acc), EArrayI(globals(), EInt(f))]), direct, e);
@@ -1246,8 +1676,21 @@ class Emitter {
 	// A call of the module's function in global f, straight to its static function. It
 	//  is the function value with no environment, as AccGlobal gives it
 	function directCall(f:Int, args:Array<E>):E {
-		var e = ECallStatic(classOf.get(f), 'f$f', [v(th), ENull].concat(args));
+		var e = variantCall(f, v(th), args);
+		if (e != null)
+			return e;
+		e = ECallStatic(classOf.get(f), 'f$f', [v(th), ENull].concat(args));
 		return mayTail.exists(f) ? call("finish", [e]) : e;
+	}
+
+	// A call of f's int version when all the arguments are ints and it has one, else null
+	function variantCall(f:Int, th:E, args:Array<E>):Null<E> {
+		if (!variantUsed[f])
+			return null;
+		for (a in args)
+			if (!isIntE(a))
+				return null;
+		return ECallStatic(variantClass.get(f), 'fi$f', [th, ENull].concat(args));
 	}
 
 	function tailCall(n:Int, d:Int, st:State, out:Array<E>, pos:Pos) {
@@ -1265,14 +1708,14 @@ class Emitter {
 			var ls = st.copy();
 			writeLocal(ls, env, known ? ENull : call("envOf", [fe]), loop, pos);
 			for (i in 0...n) {
-				var id = slots[i].id;
-				release(ls, id, loop);
+				var l = slotLocal(scope.entry, i);
+				release(ls, l.id, loop);
 				var value = slotPending(ls, d - n + i);
 				ls.slots[i] = null;
-				if (!(value.kind == LOCAL && value.local == id))
-					loop.push(ESet(v(slots[i]), value.e));
+				if (!(value.kind == LOCAL && value.local == l.id))
+					loop.push(ESet(v(l), value.e));
 			}
-			flush(ls, loop, n, blockAt[scope.entry].accIn);
+			flush(ls, loop, scope.entry, blockAt[scope.entry].accIn);
 			jumpTo(scope.entry, loop);
 			if (known) {
 				out.push(EPos(pos.file, pos.line, EBlock(loop)));

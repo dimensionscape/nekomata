@@ -9,7 +9,7 @@ import nekomata.rt.NekoStats;
 import nekomata.rt.Values;
 
 // The Nekomata host: runs neko .n modules and cppia scripts.
-//  nekomata [-jit] [--emit file.cppia] <module | file.cppia> [args...]
+//  nekomata [-interp] [--emit file.cppia] <module | file.cppia> [args...]
 //  nekomata boot <file.n> [-o out]
 // Named neko (neko.exe), it takes neko's command line instead, so it can stand in for
 //  neko. With a module attached to it, by nekomata boot or nekotools boot, it runs that
@@ -27,9 +27,12 @@ class Main {
 
 	static function main() {
 		var args = Sys.args();
-		// What haxelib starts as neko takes no host options, so the JIT has a switch here
-		if (Sys.getEnv("NEKOMATA_JIT") == "1")
-			cpp.cppia.Host.enableJit(true);
+		// The JIT is on unless -interp or NEKOMATA_JIT=0 turns it off, the switch for what
+		//  haxelib starts as neko, which takes no host options. Where it cannot get
+		//  executable memory, modules run in the interpreter without a notice
+		cpp.cppia.Host.enableJit(Sys.getEnv("NEKOMATA_JIT") != "0");
+		if (!untyped __cpp__("__scriptable_cppia_jit_active()"))
+			cpp.cppia.Host.enableJit(false);
 		var exe = Sys.programPath();
 		var attached = Launcher.attached(exe);
 		if (attached != null) {
