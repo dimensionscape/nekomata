@@ -2,13 +2,14 @@ package nekomata.rt.prims;
 
 import haxe.io.Bytes;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 
 // Converting between neko values and the hxcpp values libhxcpp's std functions take
 @:keep
 class Conv {
 	// A neko string as a host String; anything else fails the primitive
 	public static function str(v:Dynamic, prim:String):String {
-		if (!Std.isOfType(v, NString))
+		if (!Rt.isNString(v))
 			Primitives.fail(prim);
 		return (v : NString).b.toString();
 	}
@@ -39,14 +40,14 @@ class Conv {
 	}
 
 	public static function bytes(v:Dynamic, prim:String):Bytes {
-		if (!Std.isOfType(v, NString))
+		if (!Rt.isNString(v))
 			Primitives.fail(prim);
 		return (v : NString).b;
 	}
 
 	// The data of an abstract of the given kind
 	public static function data(v:Dynamic, kind:Dynamic, prim:String):Dynamic {
-		if (!Std.isOfType(v, NAbstract) || (v : NAbstract).kind != kind)
+		if (!Rt.isAbstract(v) || (v : NAbstract).kind != kind)
 			Primitives.fail(prim);
 		return (v : NAbstract).data;
 	}
@@ -77,7 +78,7 @@ class Conv {
 		var t:Int = untyped v.__GetType();
 		if (t == 3)
 			return NString.of(v);
-		if (t == 5 && !Std.isOfType(v, NObject)) {
+		if (t == 5 && !Rt.isObject(v)) {
 			var len:Int = v.length;
 			var result:Array<Dynamic> = [];
 			for (i in 0...len)

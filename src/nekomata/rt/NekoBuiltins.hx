@@ -100,13 +100,13 @@ class NekoBuiltins {
 	}
 
 	static inline function string(v:Dynamic, what:String):NString {
-		if (!Std.isOfType(v, NString))
+		if (!Rt.isNString(v))
 			Rt.error(what);
 		return v;
 	}
 
 	static inline function object(v:Dynamic, what:String):NObject {
-		if (!Std.isOfType(v, NObject))
+		if (!Rt.isObject(v))
 			Rt.error(what);
 		return v;
 	}
@@ -291,23 +291,23 @@ class NekoBuiltins {
 		// Objects
 		add("new", 1, (o:Dynamic) -> Rt.newObject(o));
 		add("objget", 2, function(o:Dynamic, f:Dynamic):Dynamic {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return null;
 			return (o : NObject).find(int(f, "$objget"));
 		});
 		add("objset", 3, function(o:Dynamic, f:Dynamic, v:Dynamic):Dynamic {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return null;
 			(o : NObject).fields.set(int(f, "$objset"), v);
 			return v;
 		});
 		add("objcall", 3, function(o:Dynamic, f:Dynamic, args:Dynamic):Dynamic {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return null;
 			return Rt.callArgs((o : NObject).find(int(f, "$objcall")), o, array(args, "$objcall"));
 		});
 		add("objfield", 2, function(o:Dynamic, f:Dynamic):Bool {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return false;
 			return (o : NObject).has(int(f, "$objfield"));
 		});
@@ -339,24 +339,24 @@ class NekoBuiltins {
 		add("pcompare", 2, (a:Dynamic, b:Dynamic) -> Rt.physCompare(a, b));
 		add("not", 1, (v:Dynamic) -> Rt.not(v));
 		add("istrue", 1, (v:Dynamic) -> Rt.toBool(v));
-		add("isnan", 1, (v:Dynamic) -> Std.isOfType(v, NFloat) && Math.isNaN((v : NFloat).v));
-		add("isinfinite", 1, (v:Dynamic) -> Std.isOfType(v, NFloat) && !Math.isNaN((v : NFloat).v) && !Math.isFinite((v : NFloat).v));
+		add("isnan", 1, (v:Dynamic) -> Rt.isNFloat(v) && Math.isNaN((v : NFloat).v));
+		add("isinfinite", 1, (v:Dynamic) -> Rt.isNFloat(v) && !Math.isNaN((v : NFloat).v) && !Math.isFinite((v : NFloat).v));
 		add("getkind", 1, function(v:Dynamic):Dynamic {
-			if (!Std.isOfType(v, NAbstract))
+			if (!Rt.isAbstract(v))
 				Rt.error("$getkind");
 			return (v : NAbstract).kind;
 		});
-		add("iskind", 2, (v:Dynamic, k:Dynamic) -> Std.isOfType(v, NAbstract) && (v : NAbstract).kind == k);
+		add("iskind", 2, (v:Dynamic, k:Dynamic) -> Rt.isAbstract(v) && (v : NAbstract).kind == k);
 
 		// Functions
 		add("nargs", 1, function(f:Dynamic) {
-			if (!Std.isOfType(f, NFunction))
+			if (!Rt.isFunction(f))
 				Rt.error("$nargs");
 			return (f : NFunction).nargs;
 		});
 		add("call", 3, (f:Dynamic, th:Dynamic, args:Dynamic) -> Rt.callArgs(f, th, array(args, "$call")));
 		add("closure", NFunction.VAR_ARGS, function(args:Array<Dynamic>):Dynamic {
-			if (args.length < 2 || !Std.isOfType(args[0], NFunction))
+			if (args.length < 2 || !Rt.isFunction(args[0]))
 				Rt.error("$closure");
 			var fn:NFunction = args[0];
 			var th = args[1];
@@ -372,7 +372,7 @@ class NekoBuiltins {
 			return Rt.apply(args[0], null, args.slice(1));
 		});
 		add("varargs", 1, function(f:Dynamic):Dynamic {
-			if (!Std.isOfType(f, NFunction) || (f : NFunction).nargs != 1)
+			if (!Rt.isFunction(f) || (f : NFunction).nargs != 1)
 				Rt.error("$varargs");
 			return new NFunction(function(args:Array<Dynamic>) return Rt.call1(f, null, args), NFunction.VAR_ARGS, Primitive);
 		});
@@ -438,7 +438,7 @@ class NekoBuiltins {
 		add("version", 0, () -> 241);
 		add("neko_build_year", 0, () -> 2026);
 		add("setresolver", 1, function(f:Dynamic) {
-			if (f != null && (!Std.isOfType(f, NFunction) || (f : NFunction).nargs != 2))
+			if (f != null && (!Rt.isFunction(f) || (f : NFunction).nargs != 2))
 				Rt.error("$setresolver");
 			Rt.resolver.value = f;
 			return null;
@@ -450,10 +450,10 @@ class NekoBuiltins {
 	static function comparer(cmp:Dynamic, prim:String):Null<(Dynamic, Dynamic) -> Bool> {
 		if (cmp == null)
 			return null;
-		if (!Std.isOfType(cmp, NFunction) || (cmp : NFunction).nargs != 2)
+		if (!Rt.isFunction(cmp) || (cmp : NFunction).nargs != 2)
 			Rt.error(prim);
 		return function(a, b) {
-			var r = Rt.call2(cmp, null, a, b);
+			var r:Dynamic = Rt.call2(cmp, null, a, b);
 			return Rt.isInt(r) && (r : Int) == 0;
 		};
 	}
@@ -568,7 +568,7 @@ class NHash {
 		// The common keys, without the state hashRec needs for nested values
 		if (Rt.isInt(v))
 			return (v : Int) & 0x3FFFFFFF;
-		if (Std.isOfType(v, NString)) {
+		if (Rt.isNString(v)) {
 			var b = (v : NString).b;
 			var h = 0, k = b.length;
 			while (k > 0)

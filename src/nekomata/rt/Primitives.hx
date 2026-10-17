@@ -110,7 +110,7 @@ class StdPrims {
 		// buffer.c
 		var bufferKind = new NObject();
 		function buffer(b:Dynamic, prim:String):haxe.io.BytesBuffer {
-			if (!Std.isOfType(b, NAbstract) || (b : NAbstract).kind != bufferKind)
+			if (!Rt.isAbstract(b) || (b : NAbstract).kind != bufferKind)
 				Primitives.fail(prim);
 			return (b : NAbstract).data;
 		}
@@ -128,7 +128,7 @@ class StdPrims {
 		});
 		Primitives.add("std@buffer_add_sub", 4, function(b:Dynamic, v:Dynamic, p:Dynamic, l:Dynamic) {
 			var buf = buffer(b, "std@buffer_add_sub");
-			if (!Std.isOfType(v, NString) || !Rt.isInt(p) || !Rt.isInt(l))
+			if (!Rt.isNString(v) || !Rt.isInt(p) || !Rt.isInt(l))
 				Primitives.fail("std@buffer_add_sub");
 			var s = (v : NString).b, pos:Int = p, len:Int = l;
 			if (pos < 0 || len < 0 || pos + len > s.length)

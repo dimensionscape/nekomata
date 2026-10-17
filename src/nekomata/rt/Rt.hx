@@ -10,7 +10,74 @@ import nekomata.rt.Values;
 //  the push and pop cost more than most of them do
 @:keep
 @:build(nekomata.build.NoFrames.build())
+@:headerCode('
+// The vtables of the boxed Int of hxcpp and of the value classes of the runtime,
+//  none of which has subclasses, so an object is one of them exactly when its vtable is: that
+//  tells them apart without a virtual call. A boxed Int keeps its value nk_int_offset
+//  bytes in. Rt takes them from an instance of each, once the collector runs
+extern void *nk_vt_int;
+extern void *nk_vt_object;
+extern void *nk_vt_function;
+extern void *nk_vt_nstring;
+extern void *nk_vt_nfloat;
+extern void *nk_vt_tail;
+extern void *nk_vt_abstract;
+extern int nk_int_offset;
+
+static inline bool nk_is(::hx::Object *o, void *inVTable)
+{
+   return o && *(void **)o == inVTable;
+}
+
+// The object a value is, for nk_is and nk_int: an Int the compiler typed as one is
+//  boxed first, which gives the same answers
+static inline ::hx::Object *nk_ptr(const ::Dynamic &v)
+{
+   return v.mPtr;
+}
+
+// The value of a boxed Int
+static inline int nk_int(::hx::Object *o)
+{
+   return *(int *)((char *)o + nk_int_offset);
+}
+')
 @:cppFileCode('
+#include <nekomata/rt/NAbstract.h>
+
+void *nk_vt_int = 0;
+void *nk_vt_object = 0;
+void *nk_vt_function = 0;
+void *nk_vt_nstring = 0;
+void *nk_vt_nfloat = 0;
+void *nk_vt_tail = 0;
+void *nk_vt_abstract = 0;
+int nk_int_offset = sizeof(void *);
+
+template<typename T> static void *nk_vtable_of()
+{
+   T instance;
+   return *(void **)&instance;
+}
+
+static void nk_init_types()
+{
+   ::Dynamic boxed(0x5eed1234);
+   nk_vt_int = *(void **)boxed.mPtr;
+   for(int off = sizeof(void *); off < 64; off += 4)
+      if (*(int *)((char *)boxed.mPtr + off) == 0x5eed1234)
+      {
+         nk_int_offset = off;
+         break;
+      }
+   nk_vt_object = nk_vtable_of< ::nekomata::rt::NObject_obj >();
+   nk_vt_function = nk_vtable_of< ::nekomata::rt::NFunction_obj >();
+   nk_vt_nstring = nk_vtable_of< ::nekomata::rt::NString_obj >();
+   nk_vt_nfloat = nk_vtable_of< ::nekomata::rt::NFloat_obj >();
+   nk_vt_tail = nk_vtable_of< ::nekomata::rt::TailCall_obj >();
+   nk_vt_abstract = nk_vtable_of< ::nekomata::rt::NAbstract_obj >();
+}
+
 // The neko type of a host object that is not an int, float, bool, string or array,
 //  from its class in one virtual call
 static int nk_object_type(::hx::Object *o)
@@ -28,6 +95,15 @@ static int nk_object_type(::hx::Object *o)
 }
 ')
 class Rt {
+	static var typesReady = {
+		untyped __cpp__("nk_init_types()");
+		true;
+	}
+
+	// The value of v, which is a boxed Int
+	static inline function intOf(v:Dynamic):Int
+		return untyped __cpp__("nk_int(nk_ptr({0}))", v);
+
 	// Neko's value tags, as $typeof numbers them
 	public static inline var TNULL = 0;
 	public static inline var TINT = 1;
@@ -95,53 +171,53 @@ class Rt {
 	// Operations with an int constant on the right, as most in loops and recursion are:
 	//  the int goes into the call as it is, and only the other value is looked at
 	public static function addI(a:Dynamic, b:Int):Dynamic
-		return isInt(a) ? (a : Int) + b : add(a, b);
+		return isInt(a) ? intOf(a) + b : add(a, b);
 
 	public static function subI(a:Dynamic, b:Int):Dynamic
-		return isInt(a) ? (a : Int) - b : sub(a, b);
+		return isInt(a) ? intOf(a) - b : sub(a, b);
 
 	public static function ltI(a:Dynamic, b:Int):Bool
-		return isInt(a) ? (a : Int) < b : lt(a, b);
+		return isInt(a) ? intOf(a) < b : lt(a, b);
 
 	public static function lteI(a:Dynamic, b:Int):Bool
-		return isInt(a) ? (a : Int) <= b : lte(a, b);
+		return isInt(a) ? intOf(a) <= b : lte(a, b);
 
 	public static function gtI(a:Dynamic, b:Int):Bool
-		return isInt(a) ? (a : Int) > b : gt(a, b);
+		return isInt(a) ? intOf(a) > b : gt(a, b);
 
 	public static function gteI(a:Dynamic, b:Int):Bool
-		return isInt(a) ? (a : Int) >= b : gte(a, b);
+		return isInt(a) ? intOf(a) >= b : gte(a, b);
 
 	public static function eqI(a:Dynamic, b:Int):Bool
-		return isInt(a) ? (a : Int) == b : eq(a, b);
+		return isInt(a) ? intOf(a) == b : eq(a, b);
 
 	public static function neqI(a:Dynamic, b:Int):Bool
-		return isInt(a) ? (a : Int) != b : neq(a, b);
+		return isInt(a) ? intOf(a) != b : neq(a, b);
 
 	// The same with an int on the left
 	public static function iadd(a:Int, b:Dynamic):Dynamic
-		return isInt(b) ? a + (b : Int) : add(a, b);
+		return isInt(b) ? a + intOf(b) : add(a, b);
 
 	public static function isub(a:Int, b:Dynamic):Dynamic
-		return isInt(b) ? a - (b : Int) : sub(a, b);
+		return isInt(b) ? a - intOf(b) : sub(a, b);
 
 	public static function ilt(a:Int, b:Dynamic):Bool
-		return isInt(b) ? a < (b : Int) : lt(a, b);
+		return isInt(b) ? a < intOf(b) : lt(a, b);
 
 	public static function ilte(a:Int, b:Dynamic):Bool
-		return isInt(b) ? a <= (b : Int) : lte(a, b);
+		return isInt(b) ? a <= intOf(b) : lte(a, b);
 
 	public static function igt(a:Int, b:Dynamic):Bool
-		return isInt(b) ? a > (b : Int) : gt(a, b);
+		return isInt(b) ? a > intOf(b) : gt(a, b);
 
 	public static function igte(a:Int, b:Dynamic):Bool
-		return isInt(b) ? a >= (b : Int) : gte(a, b);
+		return isInt(b) ? a >= intOf(b) : gte(a, b);
 
 	public static function ieq(a:Int, b:Dynamic):Bool
-		return isInt(b) ? a == (b : Int) : eq(a, b);
+		return isInt(b) ? a == intOf(b) : eq(a, b);
 
 	public static function ineq(a:Int, b:Dynamic):Bool
-		return isInt(b) ? a != (b : Int) : neq(a, b);
+		return isInt(b) ? a != intOf(b) : neq(a, b);
 
 	public static function newObject(proto:Dynamic):NObject {
 		if (proto == null)
@@ -180,7 +256,7 @@ class Rt {
 	//  dynamic_cast and wrap
 	public static function aget(a:Dynamic, i:Dynamic):Dynamic {
 		if (vt(a) == VT_ARRAY && isInt(i)) {
-			return untyped __cpp__("[](::hx::Object *o, int k) -> ::Dynamic { return k < 0 || k >= o->__length() ? ::Dynamic() : o->__GetItem(k); }({0}.mPtr, {1})", a, (i : Int));
+			return untyped __cpp__("[](::hx::Object *o, int k) -> ::Dynamic { return k < 0 || k >= o->__length() ? ::Dynamic() : o->__GetItem(k); }({0}.mPtr, {1})", a, intOf(i));
 		}
 		if (isObject(a)) {
 			var r:Dynamic = objectOp(a, i, H_GET);
@@ -194,7 +270,7 @@ class Rt {
 	public static function add(a:Dynamic, b:Dynamic):Dynamic {
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
-			return (a : Int) + (b : Int);
+			return intOf(a) + intOf(b);
 		if (numeric(ta) && numeric(tb))
 			return new NFloat(numberOf(a, ta) + numberOf(b, tb));
 		var r:Dynamic = objectOp(a, b, H_ADD);
@@ -213,7 +289,7 @@ class Rt {
 	}
 	public static function eq(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) == (b : Int);
+			return intOf(a) == intOf(b);
 		return compare(a, b) == 0;
 	}
 
@@ -233,7 +309,7 @@ class Rt {
 
 	public static function lt(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) < (b : Int);
+			return intOf(a) < intOf(b);
 		var c = compare(a, b);
 		return c < 0 && c != INVALID;
 	}
@@ -241,7 +317,7 @@ class Rt {
 	public static function sub(a:Dynamic, b:Dynamic):Dynamic {
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
-			return (a : Int) - (b : Int);
+			return intOf(a) - intOf(b);
 		if (numeric(ta) && numeric(tb))
 			return new NFloat(numberOf(a, ta) - numberOf(b, tb));
 		return objectOps(a, b, H_SUB, H_RSUB, "-");
@@ -249,7 +325,7 @@ class Rt {
 
 	public static function neq(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) != (b : Int);
+			return intOf(a) != intOf(b);
 		return compare(a, b) != 0;
 	}
 
@@ -273,6 +349,10 @@ class Rt {
 	static inline var K_HOST_STRING = 10;
 
 	static function kind(v:Dynamic):Int {
+		if (isInt(v))
+			return TINT;
+		if (isObject(v))
+			return TOBJECT;
 		switch vt(v) {
 			case 0:
 				return TNULL;
@@ -299,19 +379,22 @@ class Rt {
 	// Whether v is an instance of one of the runtime's value classes, in one virtual call
 	//  where Std.isOfType makes several, and the value as that class without a second check
 	public static inline function isFunction(v:Dynamic):Bool
-		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::NFunction_obj::_hx_ClassId); }({0}.mPtr)", v);
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_function)", v);
 
 	public static inline function isObject(v:Dynamic):Bool
-		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::NObject_obj::_hx_ClassId); }({0}.mPtr)", v);
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_object)", v);
 
 	public static inline function isNString(v:Dynamic):Bool
-		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::NString_obj::_hx_ClassId); }({0}.mPtr)", v);
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_nstring)", v);
 
 	public static inline function isNFloat(v:Dynamic):Bool
-		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::NFloat_obj::_hx_ClassId); }({0}.mPtr)", v);
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_nfloat)", v);
+
+	public static inline function isAbstract(v:Dynamic):Bool
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_abstract)", v);
 
 	static inline function isTailCall(v:Dynamic):Bool
-		return untyped __cpp__("[](::hx::Object *o){ return o && o->_hx_isInstanceOf(::nekomata::rt::TailCall_obj::_hx_ClassId); }({0}.mPtr)", v);
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_tail)", v);
 
 	public static inline function asFunction(v:Dynamic):NFunction
 		return untyped __cpp__("::nekomata::rt::NFunction(static_cast< ::nekomata::rt::NFunction_obj * >({0}.mPtr))", v);
@@ -329,7 +412,7 @@ class Rt {
 		return untyped __cpp__("::nekomata::rt::TailCall(static_cast< ::nekomata::rt::TailCall_obj * >({0}.mPtr))", v);
 
 	public static inline function isInt(v:Dynamic):Bool
-		return vt(v) == VT_INT;
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_int)", v);
 
 	static inline function isFloat(v:Dynamic):Bool
 		return isNFloat(v) || vt(v) == VT_FLOAT;
@@ -343,7 +426,7 @@ class Rt {
 	// A number as a Float, for an int or a float
 	public static function num(v:Dynamic):Float {
 		if (isInt(v))
-			return (v : Int);
+			return intOf(v);
 		if (isNFloat(v))
 			return asNFloat(v).v;
 		return (v : Float);
@@ -395,7 +478,7 @@ class Rt {
 			return null;
 		if (vt(e) == VT_STRING)
 			return NString.of((e : String));
-		if (typeOf(e) == TABSTRACT && !Std.isOfType(e, NAbstract)) {
+		if (typeOf(e) == TABSTRACT && !Rt.isAbstract(e)) {
 			// An error the host raised, such as a null access: neko would have its message
 			var text = Std.isOfType(e, haxe.Exception) ? (e : haxe.Exception).message : Std.string(e);
 			if (trace) {
@@ -417,7 +500,7 @@ class Rt {
 		return switch vt(v) {
 			case 0: false;
 			case VT_BOOL: (v : Bool);
-			case VT_INT: (v : Int) != 0;
+			case VT_INT: intOf(v) != 0;
 			default: true;
 		}
 	}
@@ -469,7 +552,7 @@ class Rt {
 
 	// A number of kind k as a Float
 	static inline function numberOf(v:Dynamic, k:Int):Float
-		return k == TINT ? (v : Int) : k == TFLOAT ? asNFloat(v).v : (v : Float);
+		return k == TINT ? intOf(v) : k == TFLOAT ? asNFloat(v).v : (v : Float);
 
 
 	// The operator fields of objects, for an operation on numbers whose operands are not
@@ -487,7 +570,7 @@ class Rt {
 	public static function mult(a:Dynamic, b:Dynamic):Dynamic {
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
-			return (a : Int) * (b : Int);
+			return intOf(a) * intOf(b);
 		if (numeric(ta) && numeric(tb))
 			return new NFloat(numberOf(a, ta) * numberOf(b, tb));
 		return objectOps(a, b, H_MULT, H_RMULT, "*");
@@ -496,10 +579,10 @@ class Rt {
 	public static function mod(a:Dynamic, b:Dynamic):Dynamic {
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT) {
-			var y:Int = b;
+			var y = intOf(b);
 			if (y == 0)
 				opError("%");
-			return (a : Int) % y;
+			return intOf(a) % y;
 		}
 		if (numeric(ta) && numeric(tb))
 			return new NFloat(numberOf(a, ta) % numberOf(b, tb));
@@ -527,22 +610,22 @@ class Rt {
 	}
 
 	public static function shl(a:Dynamic, b:Dynamic):Int
-		return intOp(a, b, "<<") << (b : Int);
+		return intOp(a, b, "<<") << intOf(b);
 
 	public static function shr(a:Dynamic, b:Dynamic):Int
-		return intOp(a, b, ">>") >> (b : Int);
+		return intOp(a, b, ">>") >> intOf(b);
 
 	public static function ushr(a:Dynamic, b:Dynamic):Int
-		return intOp(a, b, ">>>") >>> (b : Int);
+		return intOp(a, b, ">>>") >>> intOf(b);
 
 	public static function or(a:Dynamic, b:Dynamic):Int
-		return intOp(a, b, "|") | (b : Int);
+		return intOp(a, b, "|") | intOf(b);
 
 	public static function and(a:Dynamic, b:Dynamic):Int
-		return intOp(a, b, "&") & (b : Int);
+		return intOp(a, b, "&") & intOf(b);
 
 	public static function xor(a:Dynamic, b:Dynamic):Int
-		return intOp(a, b, "^") ^ (b : Int);
+		return intOp(a, b, "^") ^ intOf(b);
 
 	// -- Comparison --
 
@@ -592,7 +675,7 @@ class Rt {
 	// Physical equality, as neko compares value words
 	static function same(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) == (b : Int);
+			return intOf(a) == intOf(b);
 		if (vt(a) == VT_BOOL && vt(b) == VT_BOOL)
 			return (a : Bool) == (b : Bool);
 		return untyped __cpp__("{0}.mPtr == {1}.mPtr", a, b);
@@ -600,21 +683,21 @@ class Rt {
 
 	public static function lte(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) <= (b : Int);
+			return intOf(a) <= intOf(b);
 		var c = compare(a, b);
 		return c <= 0 && c != INVALID;
 	}
 
 	public static function gt(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) > (b : Int);
+			return intOf(a) > intOf(b);
 		var c = compare(a, b);
 		return c > 0 && c != INVALID;
 	}
 
 	public static function gte(a:Dynamic, b:Dynamic):Bool {
 		if (isInt(a) && isInt(b))
-			return (a : Int) >= (b : Int);
+			return intOf(a) >= intOf(b);
 		var c = compare(a, b);
 		return c >= 0 && c != INVALID;
 	}
@@ -675,7 +758,7 @@ class Rt {
 
 	public static function aset(a:Dynamic, i:Dynamic, v:Dynamic):Dynamic {
 		if (vt(a) == VT_ARRAY && isInt(i)) {
-			untyped __cpp__("[](::hx::Object *o, int k, const ::Dynamic &v) { if (k >= 0 && k < o->__length()) o->__SetItem(k, v); }({0}.mPtr, {1}, {2})", a, (i : Int), v);
+			untyped __cpp__("[](::hx::Object *o, int k, const ::Dynamic &v) { if (k >= 0 && k < o->__length()) o->__SetItem(k, v); }({0}.mPtr, {1}, {2})", a, intOf(i), v);
 			return v;
 		}
 		if (isObject(a)) {
@@ -1001,7 +1084,7 @@ class Rt {
 			case TNULL:
 				buf.addString("null");
 			case TINT:
-				buf.addString(Std.string((v : Int)));
+				buf.addString(Std.string(intOf(v)));
 			case TFLOAT:
 				buf.addString(formatFloat(num(v)));
 			case TBOOL:

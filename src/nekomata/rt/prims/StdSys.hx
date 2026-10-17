@@ -2,6 +2,7 @@ package nekomata.rt.prims;
 
 import haxe.io.Bytes;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 import nekomata.rt.Primitives.add;
 import nekomata.rt.prims.Conv.*;
 
@@ -268,7 +269,7 @@ class StdSys {
 		// Neko's same_closure: the same code, module and arguments count, and
 		//  environments that hold the same values
 		add("std@same_closure", 2, function(a:Dynamic, b:Dynamic) {
-			if (!Std.isOfType(a, NFunction) || !Std.isOfType(b, NFunction))
+			if (!Rt.isFunction(a) || !Rt.isFunction(b))
 				return false;
 			var fa:NFunction = a, fb:NFunction = b;
 			if (fa == fb)

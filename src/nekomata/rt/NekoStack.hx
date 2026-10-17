@@ -178,7 +178,7 @@ class NekoStack {
 			buf.addString("Called from ");
 			if (s == null)
 				buf.addString("a C function");
-			else if (Std.isOfType(s, NString)) {
+			else if (Rt.isNString(s)) {
 				buf.add((s : NString).b);
 				buf.addString(" (no debug available)");
 			} else {

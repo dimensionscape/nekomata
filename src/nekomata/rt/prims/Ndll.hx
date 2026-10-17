@@ -3,6 +3,7 @@ package nekomata.rt.prims;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 
 // What a CFFI library's primitives remember about it: the file, and what its neko_init
 //  was given. Neko's CFFI glue makes Haxe Strings and Arrays with the two constructors
@@ -293,7 +294,7 @@ class Ndll {
 		var lib = libs.get(libName);
 		if (lib != null)
 			return lib;
-		var path = Std.isOfType(loader, NObject) ? (loader : NObject).find(H_PATH) : null;
+		var path = Rt.isObject(loader) ? (loader : NObject).find(H_PATH) : null;
 		var file = NekoLoader.selectFile(path, libName, ".ndll");
 		if (!sys.FileSystem.exists(file) || sys.FileSystem.isDirectory(file))
 			failure("Failed to load library : " + file, 237);
@@ -391,17 +392,17 @@ class Ndll {
 		// Ints, bools, null, and host values the runtime passes as they are
 		if (t != VT_CLASS)
 			return v;
-		if (Std.isOfType(v, NFloat))
+		if (Rt.isNFloat(v))
 			return (v : NFloat).v;
-		if (Std.isOfType(v, NString)) {
+		if (Rt.isNString(v)) {
 			var d = (v : NString).b.getData();
 			untyped __cpp__("nk_terminate({0})", d);
 			return d;
 		}
-		if (Std.isOfType(v, NObject)) {
+		if (Rt.isObject(v)) {
 			var o:NObject = v;
 			var s = o.fields.get(H_S);
-			if (Std.isOfType(s, NString)) {
+			if (Rt.isNString(s)) {
 				// A Haxe String
 				var b = (s : NString).b;
 				var len = o.fields.get(H_LENGTH);
@@ -411,7 +412,7 @@ class Ndll {
 				return untyped __cpp__("nk_proxy({0}, {1}, null(), {2})", PROXY_ARRAY, v, lib);
 			return untyped __cpp__("nk_proxy({0}, {1}, null(), {2})", PROXY_OBJECT, v, lib);
 		}
-		if (Std.isOfType(v, NFunction))
+		if (Rt.isFunction(v))
 			return untyped __cpp__("nk_proxy({0}, {1}, {2}, {3})", PROXY_FUNCTION, v, th, lib);
 		// Abstracts, of the runtime or of an ndll, pass as they are
 		return v;
@@ -472,7 +473,7 @@ class Ndll {
 	// A string as neko's glue makes one: a Haxe String once neko_init gave the
 	//  constructor, a neko string before
 	static function haxeString(lib:NdllLib, s:NString):Dynamic {
-		if (lib == null || !Std.isOfType(lib.newString, NFunction))
+		if (lib == null || !Rt.isFunction(lib.newString))
 			return s;
 		return Rt.call1(lib.newString, null, s);
 	}
@@ -480,9 +481,9 @@ class Ndll {
 	// An array of n nulls as neko's glue makes one: a Haxe Array from neko_init's
 	//  constructor, or else a neko array
 	static function haxeArray(lib:NdllLib, n:Int):Dynamic {
-		if (lib != null && Std.isOfType(lib.newArray, NFunction)) {
+		if (lib != null && Rt.isFunction(lib.newArray)) {
 			var a = Rt.call1(lib.newArray, null, n);
-			if (Std.isOfType(a, NObject) && isHaxeArray(a) && proxyStore(a).length >= n)
+			if (Rt.isObject(a) && isHaxeArray(a) && proxyStore(a).length >= n)
 				return a;
 		}
 		return [for (i in 0...n) null];
@@ -498,7 +499,7 @@ class Ndll {
 	// -- The proxies' side (NkProxy above) --
 
 	public static function proxyField(lib:Dynamic, v:Dynamic, name:String):Dynamic {
-		if (!Std.isOfType(v, NObject))
+		if (!Rt.isObject(v))
 			return name == "length" ? proxyLength(v) : null;
 		var o:NObject = v;
 		if (name == "length" && isHaxeArray(o))
@@ -507,14 +508,14 @@ class Ndll {
 	}
 
 	public static function proxySetField(lib:Dynamic, v:Dynamic, name:String, value:Dynamic):Void {
-		if (!Std.isOfType(v, NObject))
+		if (!Rt.isObject(v))
 			return;
 		Rt.registerFields([name]);
 		(v : NObject).fields.set(nekomata.neko.Hash.field(name), toNeko(lib, value));
 	}
 
 	public static function proxyFields(v:Dynamic, out:Array<String>):Void {
-		if (!Std.isOfType(v, NObject))
+		if (!Rt.isObject(v))
 			return;
 		for (k in (v : NObject).keys()) {
 			var name = Rt.fieldName(k);
@@ -525,13 +526,13 @@ class Ndll {
 	}
 
 	public static function proxyLength(v:Dynamic):Int {
-		if (Std.isOfType(v, NObject))
+		if (Rt.isObject(v))
 			return (v : NObject).fields.get(H_LENGTH);
 		return (v : Array<Dynamic>).length;
 	}
 
 	static function proxyStore(v:Dynamic):Array<Dynamic>
-		return Std.isOfType(v, NObject) ? (v : NObject).fields.get(H_A) : v;
+		return Rt.isObject(v) ? (v : NObject).fields.get(H_A) : v;
 
 	public static function proxyItem(lib:Dynamic, v:Dynamic, i:Int):Dynamic {
 		if (i < 0 || i >= proxyLength(v))
@@ -548,7 +549,7 @@ class Ndll {
 			return;
 		}
 		// A Haxe Array grows through its own __set; a neko array has a fixed size
-		if (Std.isOfType(v, NObject)) {
+		if (Rt.isObject(v)) {
 			var set = (v : NObject).find(H_SET);
 			if (set != null)
 				Rt.call2(set, v, i, item);

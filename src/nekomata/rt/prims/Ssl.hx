@@ -3,6 +3,7 @@ package nekomata.rt.prims;
 import haxe.io.Bytes;
 import cpp.NativeSsl;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 import nekomata.rt.Primitives.add;
 import nekomata.rt.prims.Conv.*;
 import nekomata.rt.prims.StdSys.host;
@@ -89,7 +90,7 @@ class Ssl {
 
 	// The handle of an abstract the callback returned, or null for libhxcpp to refuse
 	static function handleOf(v:Dynamic, kind:Dynamic):Dynamic
-		return Std.isOfType(v, NAbstract) && (v : NAbstract).kind == kind ? (v : NAbstract).data : null;
+		return Rt.isAbstract(v) && (v : NAbstract).kind == kind ? (v : NAbstract).data : null;
 
 	static function servername(cb:NFunction):String->Dynamic {
 		return function(name:String):Dynamic {
@@ -97,7 +98,7 @@ class Ssl {
 				var r:Dynamic = Rt.call1(cb, null, NString.of(name));
 				if (r == null)
 					return null;
-				var o:NObject = Std.isOfType(r, NObject) ? r : new NObject();
+				var o:NObject = Rt.isObject(r) ? r : new NObject();
 				return {cert: handleOf(o.find(h("cert")), certKind), key: handleOf(o.find(h("key")), keyKind)};
 			} catch (e:Dynamic) {
 				sniError.value = {e: e};
@@ -204,7 +205,7 @@ class Ssl {
 		//  takes any object that is not a class instance it can find a socket in
 		add("ssl@ssl_set_socket", 2, function(s:Dynamic, sock:Dynamic) {
 			var sh = ssl(s, "ssl@ssl_set_socket");
-			if (!Std.isOfType(sock, NAbstract) || (sock : NAbstract).kind == null)
+			if (!Rt.isAbstract(sock) || (sock : NAbstract).kind == null)
 				Primitives.fail("ssl@ssl_set_socket");
 			var handle:Dynamic = (sock : NAbstract).data;
 			var isClass:Bool = handle == null || untyped __cpp__("{0}->__GetType() == vtClass", handle);
@@ -261,7 +262,7 @@ class Ssl {
 				return NativeSsl.ssl_recv_char(sh);
 			} catch (e:Dynamic) {
 				var text:Dynamic = fromHost(e);
-				if (Std.isOfType(text, NString) && ((text : NString).toString() == "Blocking" || (text : NString).toString() == "ssl network error"))
+				if (Rt.isNString(text) && ((text : NString).toString() == "Blocking" || (text : NString).toString() == "ssl network error"))
 					text = NString.of("ERROR - Generic error");
 				return Rt.raise(text);
 			}
@@ -310,7 +311,7 @@ class Ssl {
 		//  with the cert and key to answer with
 		add("ssl@conf_set_servername_callback", 2, function(c:Dynamic, cb:Dynamic) {
 			var ch = conf(c, "ssl@conf_set_servername_callback");
-			if (!Std.isOfType(cb, NFunction) || ((cb : NFunction).nargs != 1 && (cb : NFunction).nargs != NFunction.VAR_ARGS))
+			if (!Rt.isFunction(cb) || ((cb : NFunction).nargs != 1 && (cb : NFunction).nargs != NFunction.VAR_ARGS))
 				Primitives.fail("ssl@conf_set_servername_callback");
 			NativeSsl.conf_set_servername_callback(ch, servername(cb));
 			return true;
