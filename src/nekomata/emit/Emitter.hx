@@ -93,6 +93,7 @@ class Emitter {
 	var builtinHashes:Array<Int> = [];
 
 	static final loaderHash = nekomata.neko.Hash.field("loader");
+	static final callHash = nekomata.neko.Hash.field("call");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
 	// The operations the runtime has a version of with an int on the right, named with
@@ -1383,6 +1384,24 @@ class Emitter {
 		out.push(EPos(pos.file, pos.line, ESet(v(l), e)));
 		if (wasEffect)
 			st.acc = Pending.ofLocal(id, v(l));
+		switch e {
+			case EArrayDef(items) if (items.length <= 5 && !Lambda.exists(items, i -> !plain(i))):
+				lastArray = {out: out, index: out.length - 1, slot: k, local: id, items: items};
+			default:
+		}
+	}
+
+	// The last array of plain values written to a slot, while it is the last statement
+	//  written: a $call that passes it as its arguments takes its items instead
+	var lastArray:Null<{out:Array<E>, index:Int, slot:Int, local:Int, items:Array<E>}> = null;
+
+	// A value read without effects, a constant or a local
+	static function plain(e:E):Bool {
+		return switch e {
+			case EInt(_) | EVar(_) | ENull | EBool(_) | EString(_) | EStatic(_, _): true;
+			case EArrayI(a, EInt(_)): plain(a);
+			default: false;
+		}
 	}
 
 	// Writes local l, which is not a slot, with what pending reads it put in locals first
@@ -1511,8 +1530,20 @@ class Emitter {
 				pop(st, d - param, d);
 			case Loop:
 			case Call:
-				var args = top(st, d, param);
 				var f = st.acc;
+				var la = lastArray;
+				if (param == 3 && f != null && f.kind == CONST && f.builtin == callHash && la != null && la.out == out
+					&& la.index == out.length - 1 && la.slot == d - 1 && st.slots[d - 1] == null && la.local == slotLocal(p, d - 1).id) {
+					// $call(f, this, [args]), as Haxe calls each constructor: the call itself,
+					//  with the items for arguments and no array
+					out.pop();
+					var fn = slotValue(st, d - 3), self = slotValue(st, d - 2);
+					st.acc = null;
+					pop(st, d - param, d);
+					setAcc(st, out, effect(call('call${la.items.length}', [fn, self].concat(la.items)), pos));
+					return false;
+				}
+				var args = top(st, d, param);
 				var e:E;
 				var leaf = f != null && f.kind == CONST && f.builtin != 0 ? LEAF_BUILTINS.get(f.builtin) : null;
 				var isBool = false, canThrow = true;
