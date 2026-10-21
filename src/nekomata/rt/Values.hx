@@ -35,11 +35,30 @@ class NFloat {
 // A neko object: fields keyed by hash, with an optional prototype
 @:keep
 @:build(nekomata.build.NoFrames.build())
+@:cppFileCode('
+// Where field hashes were last found in objects with more fields than a scan suits,
+//  such as the prototypes of classes, by object and hash. An entry is only taken when
+//  the object still has the hash there, so one left by another object, or by this one
+//  before it changed, or half written by another thread, is only a miss
+struct nk_find_entry
+{
+   void *obj;
+   int h;
+   int idx;
+};
+static nk_find_entry nk_find_cache[1024];
+
+static inline nk_find_entry &nk_find_slot(void *inObj, int inH)
+{
+   return nk_find_cache[(int)((((size_t)inObj) >> 4) ^ (unsigned int)inH) & 1023];
+}
+')
 class NObject {
 	// The object's fields as neko's objtable keeps them: field hashes in order, with
-	//  their values beside them
+	//  their values beside them. The values are an Array<{}>, which hxcpp makes a plain
+	//  array of Dynamic where an Array<Dynamic> is a VirtualArray, read through virtual calls
 	public var ids:Array<Int>;
-	public var values:Array<Dynamic>;
+	public var values:Array<{}>;
 	public var proto:Null<NObject>;
 	public var fields(get, never):FieldTable;
 
@@ -57,7 +76,7 @@ class NObject {
 		while (o != null) {
 			var i = o.index(h);
 			if (i >= 0)
-				return cpp.NativeArray.unsafeGet(o.values, i);
+				return (cpp.NativeArray.unsafeGet(o.values, i) : Dynamic);
 			o = o.proto;
 		}
 		return null;
@@ -85,12 +104,17 @@ class NObject {
 					return i;
 			return -1;
 		}
+		var cached:Int = untyped __cpp__("[&]{ nk_find_entry &e = nk_find_slot(this, {0}); return e.obj == (void *)this && e.h == {0} ? e.idx : -1; }()", h);
+		if (cached >= 0 && cached < n && cpp.NativeArray.unsafeGet(ids, cached) == h)
+			return cached;
 		var lo = 0, hi = n - 1;
 		while (lo <= hi) {
 			var mid = (lo + hi) >> 1;
 			var id = cpp.NativeArray.unsafeGet(ids, mid);
-			if (id == h)
+			if (id == h) {
+				untyped __cpp__("{ nk_find_entry &e = nk_find_slot(this, {0}); e.obj = (void *)this; e.h = {0}; e.idx = {1}; }", h, mid);
 				return mid;
+			}
 			if (id < h)
 				lo = mid + 1;
 			else
@@ -135,7 +159,7 @@ class NObject {
 abstract FieldTable(NObject) {
 	public inline function get(h:Int):Dynamic {
 		var i = this.index(h);
-		return i < 0 ? null : cpp.NativeArray.unsafeGet(this.values, i);
+		return i < 0 ? null : (cpp.NativeArray.unsafeGet(this.values, i) : Dynamic);
 	}
 
 	public inline function exists(h:Int):Bool
