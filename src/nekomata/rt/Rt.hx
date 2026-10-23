@@ -22,6 +22,7 @@ extern void *nk_vt_nstring;
 extern void *nk_vt_nfloat;
 extern void *nk_vt_tail;
 extern void *nk_vt_abstract;
+extern void *nk_vt_nhash;
 extern int nk_int_offset;
 
 static inline bool nk_is(::hx::Object *o, void *inVTable)
@@ -44,6 +45,7 @@ static inline int nk_int(::hx::Object *o)
 ')
 @:cppFileCode('
 #include <nekomata/rt/NAbstract.h>
+#include <nekomata/rt/NHash.h>
 
 void *nk_vt_int = 0;
 void *nk_vt_object = 0;
@@ -52,6 +54,7 @@ void *nk_vt_nstring = 0;
 void *nk_vt_nfloat = 0;
 void *nk_vt_tail = 0;
 void *nk_vt_abstract = 0;
+void *nk_vt_nhash = 0;
 int nk_int_offset = sizeof(void *);
 
 template<typename T> static void *nk_vtable_of()
@@ -76,6 +79,7 @@ static void nk_init_types()
    nk_vt_nfloat = nk_vtable_of< ::nekomata::rt::NFloat_obj >();
    nk_vt_tail = nk_vtable_of< ::nekomata::rt::TailCall_obj >();
    nk_vt_abstract = nk_vtable_of< ::nekomata::rt::NAbstract_obj >();
+   nk_vt_nhash = nk_vtable_of< ::nekomata::rt::NHash_obj >();
 }
 
 // The neko type of a host object that is not an int, float, bool, string or array,
@@ -393,6 +397,12 @@ class Rt {
 
 	public static inline function isNFloat(v:Dynamic):Bool
 		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_nfloat)", v);
+
+	public static inline function isNHash(v:Dynamic):Bool
+		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_nhash)", v);
+
+	public static inline function asNHash(v:Dynamic):nekomata.rt.NekoBuiltins.NHash
+		return untyped __cpp__("::nekomata::rt::NHash(static_cast< ::nekomata::rt::NHash_obj * >(nk_ptr({0})))", v);
 
 	public static inline function isAbstract(v:Dynamic):Bool
 		return untyped __cpp__("nk_is(nk_ptr({0}), nk_vt_abstract)", v);
@@ -1070,10 +1080,38 @@ class Rt {
 	public static function valueBytes(v:Dynamic):Bytes {
 		if (isNString(v))
 			return asNString(v).b;
+		if (isInt(v))
+			return intBytes(intOf(v));
 		var buf = new BytesBuffer();
 		appendValue(buf, v);
 		return buf.getBytes();
 	}
+
+	// The decimal digits of an int, written straight into their bytes
+	public static function intBytes(i:Int):Bytes {
+		var n = i < 0 ? 2 : 1;
+		var t = i;
+		while (t >= 10 || t <= -10) {
+			t = div10(t);
+			n++;
+		}
+		var b = Bytes.alloc(n);
+		var d = b.getData();
+		var k = n;
+		t = i;
+		do {
+			var q = div10(t);
+			var r = t - q * 10;
+			cpp.NativeArray.unsafeSet(d, --k, 48 + (r < 0 ? -r : r));
+			t = q;
+		} while (t != 0);
+		if (i < 0)
+			cpp.NativeArray.unsafeSet(d, 0, 45);
+		return b;
+	}
+
+	static inline function div10(v:Int):Int
+		return untyped __cpp__("({0} / 10)", v);
 
 	public static function toNString(v:Dynamic):NString {
 		if (isNString(v))

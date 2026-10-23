@@ -459,13 +459,14 @@ class NekoBuiltins {
 	}
 
 	static function hash(h:Dynamic):NHash {
-		if (!Std.isOfType(h, NHash))
+		if (!Rt.isNHash(h))
 			Rt.error("Invalid hashtable");
-		return h;
+		return Rt.asNHash(h);
 	}
 }
 
 // One binding in a neko hash table
+@:build(nekomata.build.NoFrames.build())
 class HCell {
 	public var hkey:Int;
 	public var key:Dynamic;
@@ -483,6 +484,7 @@ class HCell {
 // Neko's $hnew tables (vm/builtins.c), cell for cell: $hiter visits bindings in the
 //  order neko does, which programs that print or generate code from a table rely on
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class NHash {
 	static inline var DEF_SIZE = 7;
 
@@ -508,6 +510,18 @@ class NHash {
 			}
 			return null;
 		}
+		if (cmp == null && Rt.isNString(k)) {
+			// A neko string key equals another with the same bytes, and other keys as
+			//  $compare says
+			var b = (k : NString).b;
+			while (c != null) {
+				var ck:Dynamic = c.key;
+				if (Rt.isNString(ck) ? sameBytes(b, (ck : NString).b) : Rt.compare(k, ck) == 0)
+					return c;
+				c = c.next;
+			}
+			return null;
+		}
 		while (c != null) {
 			if (cmp == null ? Rt.compare(k, c.key) == 0 : cmp(k, c.key))
 				return c;
@@ -515,6 +529,9 @@ class NHash {
 		}
 		return null;
 	}
+
+	static inline function sameBytes(a:haxe.io.Bytes, b:haxe.io.Bytes):Bool
+		return a.length == b.length && a.compare(b) == 0;
 
 	// Adds a binding in front of any for the same key, as $hadd and $hset do
 	public function add(k:Dynamic, v:Dynamic) {
@@ -547,19 +564,20 @@ class NHash {
 	public function resize(size:Int) {
 		var n = size <= 0 ? DEF_SIZE : size;
 		var cc:Array<Null<HCell>> = [for (_ in 0...n) null];
-		// Neko re-adds each chain from its end, which keeps the chain's order
-		function addRec(c:Null<HCell>) {
-			if (c == null)
-				return;
-			addRec(c.next);
-			var k = c.hkey % n;
-			c.next = cc[k];
-			cc[k] = c;
-		}
 		for (i in 0...ncells)
-			addRec(cells[i]);
+			readd(cells[i], cc, n);
 		cells = cc;
 		ncells = n;
+	}
+
+	// Neko re-adds each chain from its end, which keeps the chain's order
+	static function readd(c:Null<HCell>, cc:Array<Null<HCell>>, n:Int) {
+		if (c == null)
+			return;
+		readd(c.next, cc, n);
+		var k = c.hkey % n;
+		c.next = cc[k];
+		cc[k] = c;
 	}
 
 	// Neko's val_hash (vm/hash.c), stable across runs: it reads the contents of
@@ -569,10 +587,10 @@ class NHash {
 		if (Rt.isInt(v))
 			return (v : Int) & 0x3FFFFFFF;
 		if (Rt.isNString(v)) {
-			var b = (v : NString).b;
-			var h = 0, k = b.length;
+			var d = (v : NString).b.getData();
+			var h = 0, k = d.length;
 			while (k > 0)
-				h = h * 19 + signed(b.get(--k));
+				h = h * 19 + signed(cpp.NativeArray.unsafeGet(d, --k));
 			return h & 0x3FFFFFFF;
 		}
 		var h = new HashState();
