@@ -268,6 +268,8 @@ class Rt {
 	}
 
 	public static function add(a:Dynamic, b:Dynamic):Dynamic {
+		if (isInt(a) && isInt(b))
+			return intOf(a) + intOf(b);
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
 			return intOf(a) + intOf(b);
@@ -315,6 +317,8 @@ class Rt {
 	}
 
 	public static function sub(a:Dynamic, b:Dynamic):Dynamic {
+		if (isInt(a) && isInt(b))
+			return intOf(a) - intOf(b);
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
 			return intOf(a) - intOf(b);
@@ -568,6 +572,8 @@ class Rt {
 	}
 
 	public static function mult(a:Dynamic, b:Dynamic):Dynamic {
+		if (isInt(a) && isInt(b))
+			return intOf(a) * intOf(b);
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT)
 			return intOf(a) * intOf(b);
@@ -577,6 +583,8 @@ class Rt {
 	}
 
 	public static function mod(a:Dynamic, b:Dynamic):Dynamic {
+		if (isInt(a) && isInt(b) && intOf(b) != 0)
+			return intOf(a) % intOf(b);
 		var ta = kind(a), tb = kind(b);
 		if (ta == TINT && tb == TINT) {
 			var y = intOf(b);
