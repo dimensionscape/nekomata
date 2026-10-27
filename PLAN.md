@@ -329,8 +329,30 @@ sqlite; the VM functions with a library that needs them (mod_neko, ui).
   where one is needed, since hxcpp boxes an integral Float as an Int; typed module
   globals; and fewer runtime calls for field reads and method calls.
 
+## Notes from translated Haxe code
+
+- Profiled with a sampler over a host built with symbols, leaf samples only: walking
+  the stack through jitted frames gives callers that are not there.
+- A function with a trap kept every slot in a local throughout, so a `try` anywhere
+  made each method call dynamic. Only the slots a handler can read are kept now.
+- The runtime tells its own classes and hxcpp's boxed Int apart by vtable, and reads an
+  int out of its box, where it made two virtual calls per operand. Arrays the
+  translation builds are `Array<Dynamic>` rather than cppia's `VirtualArray`, as are an
+  object's field values, and objects with many fields remember where a field was found.
+- `$call(constructor, obj, $array(args))`, which Haxe writes for every `new`, calls the
+  constructor with the items and builds no array.
+- Measured on Windows, CPU time, translated against neko and direct cppia: fields 55
+  (neko 45, cppia 23), methods 83 (62, 38), alloc 47 (46, 17), arrays 66 (64, 18),
+  strings 61 (62, 2), string maps 106 (77, 7), closures 33 (48, 49), exceptions 81 (20,
+  32), `Std.string` 199 (110, 9), from 99, 133, 111, 106, 95, 171, 46, 75 and 319.
+- Left: a throw is a C++ exception, where a `$throw` a trap of the same function
+  catches could be a jump; a neko string is three objects, its `NString`, `Bytes` and
+  buffer; and field reads and arithmetic are each a call out of cppia, which only the
+  JIT inlining checks would remove.
+
 ## Open questions
 
 - Performance of the switch-dispatch form against neko's interpreter; structured
-  control flow recovery is the next step if dispatch dominates. First timings on neko's
-  benchmarks range from 2.5 times faster to 13 times slower than neko.
+  control flow recovery is the next step if dispatch dominates. Loops on locals now run
+  faster than on neko, and translated Haxe code from a little faster than neko to 4
+  times slower.
