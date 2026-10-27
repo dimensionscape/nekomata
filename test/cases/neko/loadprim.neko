@@ -1,6 +1,10 @@
 // $loader.loadprim: primitives that exist, wrong argument counts, missing primitives
 //  and libraries, and calling primitives with bad values
-var p = function(name, n) try $loader.loadprim(name, n) catch e { $print("loadprim ", name, " ", n, " throws ", e, "\n"); null };
+// A library that does not load is followed by what dlerror says, elsewhere than on
+//  Windows; on macOS that lists the places dlopen looked, which depend on where neko is,
+//  so only the part before it is printed
+var upto = function(s, sep) { var at = $sfind(s, 0, sep); if at == null s else $ssub(s, 0, at) };
+var p = function(name, n) try $loader.loadprim(name, n) catch e { $print("loadprim ", name, " ", n, " throws ", upto($string(e), " ("), "\n"); null };
 var sqrt = p("std@math_sqrt", 1);
 $print("sqrt ", sqrt(16.0), " ", sqrt(2), " ", $nargs(sqrt), "\n");
 p("std@math_sqrt", 2);

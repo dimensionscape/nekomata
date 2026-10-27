@@ -15,11 +15,15 @@ import nekomata.rt.Values;
 //  neko. With a module attached to it, by nekomata boot or nekotools boot, it runs that
 //  module with all of its arguments.
 // Neko code can recurse as deep as neko allows, so it gets a native stack that matches:
-//  256M reserved, committed only as it is used. Windows sets it for the main thread and
-//  every thread the program starts. Elsewhere the main thread keeps the 8M the system
-//  gives it, so modules run on a thread of their own with that stack, and on Linux the
-//  threads a program starts get it too
-@:buildXml('<target id="haxe"><flag value="-STACK:268435456" if="windows"/></target>')
+//  256M reserved, committed only as it is used. Windows sets it through the linker for
+//  the main thread and every thread the program starts, and macOS for the main thread.
+//  Elsewhere than Windows modules run on a thread of their own with that stack, as a
+//  program that runs them inside itself may have the 8M main thread Linux gives, and
+//  on Linux the threads a program starts get it too
+@:buildXml('<target id="haxe">
+	<flag value="-STACK:268435456" if="windows"/>
+	<flag value="-Wl,-stack_size,0x10000000" if="macos"/>
+</target>')
 @:cppFileCode('
 #ifndef _WIN32
 #include <pthread.h>
