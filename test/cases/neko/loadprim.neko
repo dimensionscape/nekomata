@@ -1,0 +1,76 @@
+// $loader.loadprim: primitives that exist, wrong argument counts, missing primitives
+//  and libraries, and calling primitives with bad values
+var p = function(name, n) try $loader.loadprim(name, n) catch e { $print("loadprim ", name, " ", n, " throws ", e, "\n"); null };
+var sqrt = p("std@math_sqrt", 1);
+$print("sqrt ", sqrt(16.0), " ", sqrt(2), " ", $nargs(sqrt), "\n");
+p("std@math_sqrt", 2);
+p("std@no_such_primitive", 0);
+p("no_such_library@thing", 1);
+p("std@math_sqrt", -1);
+p("nolib", 0);
+p("", 0);
+$print("non string name: ", try $loader.loadprim(5, 1) catch e e, "\n");
+var pow = p("std@math_pow", 2);
+$print("pow ", pow(2, 10), " ", pow(2.0, 0.5), " ", pow(-8, 1.0 / 3.0), "\n");
+$print("bad arg to sqrt: ", try sqrt("x") catch e e, "\n");
+$print("wrong count: ", try sqrt(1, 2) catch e e, "\n");
+var floor = p("std@math_floor", 1);
+var ceil = p("std@math_ceil", 1);
+var round = p("std@math_round", 1);
+var vals = $array(1.5, -1.5, 2.5, -2.5, 0.49999999999999994, 10000000000.0, -0.0, 3, 1073741823.5, 2147483648.5);
+var i = 0;
+while i < $asize(vals) {
+	$print(vals[i], ": floor ", try floor(vals[i]) catch e e, " ceil ", try ceil(vals[i]) catch e e, " round ", try round(vals[i]) catch e e, "\n");
+	i += 1;
+}
+var abs = p("std@math_abs", 1);
+$print("abs ", abs(-3), " ", abs(-3.5), " ", abs(0x80000000), "\n");
+var atan2 = p("std@math_atan2", 2);
+$print("atan2 ", atan2(1, 1), "\n");
+var buf_new = p("std@buffer_new", 0);
+var buf_add = p("std@buffer_add", 2);
+var buf_add_char = p("std@buffer_add_char", 2);
+var buf_add_sub = p("std@buffer_add_sub", 4);
+var buf_string = p("std@buffer_string", 1);
+var b = buf_new();
+buf_add(b, "abc");
+buf_add(b, 12);
+buf_add(b, $array(1, null));
+buf_add_char(b, 33);
+buf_add_sub(b, "0123456789", 3, 4);
+$print("buffer ", buf_string(b), " ", $typeof(b), "\n");
+$print("bad char: ", try buf_add_char(b, 300) catch e e, "\n");
+var sprintf = p("std@sprintf", 2);
+var getkind = $getkind(b);
+$print("kind is abstract: ", $typeof(getkind) == $tabstract, " iskind ", $iskind(b, getkind), " ", $iskind(5, getkind), "\n");
+var str_find = p("std@string_split", 2);
+var utf8_length = p("std@utf8_length", 1);
+$print("utf8_length ", try utf8_length("h\195\169llo") catch e e, "\n");
+var base_encode = p("std@base_encode", 2);
+$print("base64 ", try base_encode("hello", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") catch e e, "\n");
+var md5 = p("std@make_md5", 1);
+var hex = function(s) {
+	var digits = "0123456789abcdef";
+	var r = "";
+	var k = 0;
+	while k < $ssize(s) {
+		var c = $sget(s, k);
+		r += $ssub(digits, c >> 4, 1) + $ssub(digits, c & 15, 1);
+		k += 1;
+	}
+	r
+};
+$print("md5 ", hex(md5("hello")), "\n");
+var serialize = p("std@serialize", 1);
+var unserialize = p("std@unserialize", 2);
+var data = $array(1, 2.5, "three", null, true, { x => 1, y => $array(4) });
+var back = unserialize(serialize(data), $loader);
+$print("serialize round trip ", back, "\n");
+var url_encode = p("std@url_encode", 1);
+var url_decode = p("std@url_decode", 1);
+$print("url ", url_encode("a b&c=d/é"), " ", url_decode("a%20b%26c+d"), "\n");
+var float_bytes = p("std@float_bytes", 2);
+var double_bytes = p("std@double_bytes", 2);
+$print("float bytes ", hex(float_bytes(1.5, false)), " double bytes ", hex(double_bytes(1.5, true)), "\n");
+var int32_new = p("std@int32_new", 1);
+$print("int32_new ", try int32_new(5) catch e e, "\n");

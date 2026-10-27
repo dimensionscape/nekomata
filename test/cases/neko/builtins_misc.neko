@@ -1,0 +1,50 @@
+// Builtins not covered elsewhere: $setresolver, $excstack and $callstack contents,
+//  $getkind and $iskind, $objcall, $varargs edge cases and $closure on methods
+var o = $new(null);
+o.known = "known";
+$setresolver(function(obj, field) {
+	$print("[resolve ", $field(field), "]");
+	"resolved " + $field(field)
+});
+$print(o.known, " ", o.unknown, " ", o.other, "\n");
+var p = $new(null);
+$print("other object: ", p.missing, "\n");
+$setresolver(null);
+$print("after reset: ", o.unknown, "\n");
+
+var where = function() $callstack();
+var cs = where();
+$print("callstack size ", $asize(cs) > 0, "\n");
+var thrower = function() $throw("x");
+var inner = function() thrower();
+try inner() catch e {
+	var s = $excstack();
+	$print("excstack entries ", $asize(s), "\n");
+	var i = 0;
+	while i < $asize(s) {
+		$print("  ", s[i], "\n");
+		i += 1;
+	}
+}
+try $throw("at top") catch e {
+	$print("top excstack ", $excstack(), "\n");
+}
+$print("callstack at top ", $callstack(), "\n");
+var f = function() $callstack();
+$print("callstack in function ", f(), "\n");
+
+var k = $getkind($loader.loadprim("std@buffer_new", 0)());
+$print("getkind of non abstract: ", try $getkind(5) catch e e, "\n");
+$print("iskind with non kind: ", try $iskind(5, 5) catch e e, "\n");
+var vf = $varargs(function(a) $asize(a));
+$print("varargs nargs ", $nargs(vf), " with $call ", $call(vf, null, $array(1, 2, 3)), "\n");
+$print("varargs of non function: ", try $varargs(5) catch e e, "\n");
+var m = $new(null);
+m.v = "method this";
+m.get = function(suffix) this.v + suffix;
+var c = $closure(m.get, m);
+$print("closure of method ", c("!"), "\n");
+$print("objcall missing ", try $objcall(m, $hash("nothing"), $array()) catch e e, "\n");
+$print("objcall bad args ", try $objcall(m, $hash("get"), 5) catch e e, "\n");
+$print("call bad args ", try $call(m.get, m, 5) catch e e, "\n");
+$print("nargs of non function ", try $nargs(5) catch e e, "\n");

@@ -1,0 +1,5 @@
+// An error raised by the VM itself, not by $throw, left uncaught
+var add = function(a, b) a + b;
+var go = function() add(1, $array(2));
+$print(go(), "\n");
+$print(add(null, 1), "\n");

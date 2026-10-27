@@ -1,0 +1,68 @@
+// Traps in loops and switches, handlers that throw, and trap depth across calls
+var log = function(s) $print(s, " ");
+var i = 0;
+while i < 6 {
+	try {
+		switch i {
+			0 => log("zero")
+			1 => $throw("one")
+			2 => { try $throw("two inner") catch e { log("[" + e + "]"); $throw("two outer"); } }
+			3 => { i += 1; continue; }
+			4 => { break; }
+			default => log("default")
+		}
+	} catch e log("caught " + e);
+	i += 1;
+}
+$print("\nleft at ", i, "\n");
+
+// A handler that throws to an outer handler in another function
+var risky = function(n) {
+	try {
+		if n > 0 $throw("level " + n);
+		"fine"
+	} catch e $throw(e + " rethrown");
+};
+var safe = function(n) try risky(n) catch e "safe got " + e;
+$print(safe(0), " | ", safe(3), "\n");
+
+// Exceptions crossing a trap left in a caller's loop
+var counter = function() {
+	var c = 0;
+	var k = 0;
+	while k < 1000 {
+		try {
+			if k % 100 == 99 $throw(k);
+			c += 1;
+		} catch e c -= 1000;
+		k += 1;
+	}
+	c
+};
+$print("counter ", counter(), "\n");
+
+// do while with a try, and a try as the loop condition's value
+var j = 0;
+do {
+	try { j += 1; if j == 3 $throw("three"); } catch e $print("do caught ", e, " ");
+} while j < 5;
+$print("\nj ", j, "\n");
+var tries = 0;
+while (try { tries += 1; tries < 4 } catch e false) {}
+$print("tries ", tries, "\n");
+
+// Deeply nested traps in one function
+var nest = function(d) {
+	var r = "";
+	try {
+		try {
+			try {
+				try {
+					try $throw(d) catch e { r += "5"; if d > 4 $throw(e); }
+				} catch e { r += "4"; if d > 3 $throw(e); }
+			} catch e { r += "3"; if d > 2 $throw(e); }
+		} catch e { r += "2"; if d > 1 $throw(e); }
+	} catch e r += "1";
+	r
+};
+$print(nest(0), " ", nest(2), " ", nest(5), "\n");

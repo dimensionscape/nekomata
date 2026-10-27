@@ -1,0 +1,62 @@
+// Operator overloading: __add, __radd, __sub, __rsub, __mult, __rmult, __div, __rdiv,
+//  __mod, __rmod, __get, __set, __compare and __string
+V = $new(null);
+V.__string = function() "V(" + this.x + ")";
+V.__add = function(o) { $print("[add]"); mk(this.x + (if $typeof(o) == $tobject o.x else o)) };
+V.__radd = function(o) { $print("[radd]"); mk((if $typeof(o) == $tobject o.x else o) + this.x) };
+V.__sub = function(o) { $print("[sub]"); mk(this.x - o) };
+V.__rsub = function(o) { $print("[rsub]"); mk(o - this.x) };
+V.__mult = function(o) { $print("[mult]"); mk(this.x * o) };
+V.__rmult = function(o) { $print("[rmult]"); mk(o * this.x) };
+V.__div = function(o) { $print("[div]"); mk(this.x / o) };
+V.__rdiv = function(o) { $print("[rdiv]"); mk(o / this.x) };
+V.__mod = function(o) { $print("[mod]"); mk(this.x % o) };
+V.__rmod = function(o) { $print("[rmod]"); mk(o % this.x) };
+V.__get = function(i) { $print("[get ", i, "]"); this.x * 100 + i };
+V.__set = function(i, v) { $print("[set ", i, " ", v, "]"); this.x = v; };
+V.__compare = function(o) { $print("[compare]"); this.x - (if $typeof(o) == $tobject o.x else o) };
+mk = function(x) { var o = $new(null); o.x = x; $objsetproto(o, V); o };
+
+var a = mk(10);
+var b = mk(3);
+$print(a + b, "\n");
+$print(a + 1, "\n");
+$print(1 + a, "\n");
+$print("s" + a, "\n");
+$print(a + "s", "\n");
+$print(a - 4, "\n");
+$print(4 - a, "\n");
+$print(a * 2, "\n");
+$print(2 * a, "\n");
+$print(a / 4, "\n");
+$print(40 / a, "\n");
+$print(a % 3, "\n");
+$print(25 % a, "\n");
+$print(a[7], "\n");
+a[2] = 99;
+$print(a, "\n");
+$print(a < b, " ", a > b, " ", a == mk(99), " ", a != b, " ", a >= 99, "\n");
+$print($compare(a, b), "\n");
+var x = a;
+x += 1;
+$print(x, "\n");
+
+// An object with only __radd: the left operand has no __add
+var R = $new(null);
+R.__radd = function(o) "radd got " + o;
+$print(5 + R, " ", "str" + R, "\n");
+// Neither side overloaded
+var plain = $new(null);
+$print("plain - 1: ", try plain - 1 catch e "throws " + e, "\n");
+$print("plain * 2: ", try plain * 2 catch e "throws " + e, "\n");
+$print("plain[0]: ", try plain[0] catch e "throws " + e, "\n");
+$print("plain + \"s\": ", plain + "s", "\n");
+// An overload that throws
+var T = $new(null);
+T.__add = function(o) $throw("add failed");
+$print("throwing __add: ", try T + 1 catch e "caught " + e, "\n");
+// Array access on arrays, strings and ints
+var arr = $array(1, 2, 3);
+$print(arr[0], " ", arr[5], " ", arr[-1], " ", try "str"[0] catch e "throws " + e, " ", try (5)[0] catch e "throws " + e, "\n");
+arr[10] = 1;
+$print(arr, " ", $asize(arr), "\n");

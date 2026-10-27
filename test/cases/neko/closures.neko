@@ -1,0 +1,100 @@
+// Closures and their environments, $closure, $apply, $varargs, $nargs, $call and wrong
+//  argument counts
+var make = function(start) {
+	var n = start;
+	var o = $new(null);
+	o.inc = function() { n += 1; n };
+	o.get = function() n;
+	o.reset = function(v) n = v;
+	o
+};
+var c1 = make(10);
+var c2 = make(100);
+c1.inc();
+c1.inc();
+c2.inc();
+$print(c1.get(), " ", c2.get(), "\n");
+c1.reset(-5);
+$print(c1.inc(), " ", c2.get(), "\n");
+
+// Closures made in a loop capture the variable of each iteration
+var fs = $amake(5);
+var i = 0;
+while i < 5 {
+	var j = i;
+	fs[i] = function() j * 10;
+	i += 1;
+}
+$print(fs[0](), " ", fs[3](), " ", fs[4](), "\n");
+var shared = $amake(3);
+var k = 0;
+while k < 3 {
+	shared[k] = function() k;
+	k += 1;
+}
+$print("shared loop var: ", shared[0](), " ", shared[2](), "\n");
+
+// Deep nesting of environments
+var outer = function(a) {
+	var b = a * 2;
+	function(c) {
+		var d = c + b;
+		function(e) {
+			var f = e + d + a;
+			function() $array(a, b, c, d, e, f)
+		}
+	}
+};
+$print(outer(1)(2)(3)(), "\n");
+
+// $nargs, $closure, $apply, $varargs
+var add3 = function(a, b, c) a + b + c;
+$print("nargs ", $nargs(add3), " ", $nargs(function() 0), " ", $nargs($varargs(function(a) a)), "\n");
+var add1 = $closure(add3, null, 1);
+$print("closure ", add1(2, 3), " nargs ", $nargs(add1), "\n");
+var add12 = $closure(add3, null, 1, 2);
+$print("closure2 ", add12(3), "\n");
+var all = $closure(add3, null, 1, 2, 3);
+$print("closure all ", all(), "\n");
+var meth = function() this.v;
+var bound = $closure(meth, { v => "bound this" });
+$print(bound(), "\n");
+$print("apply ", $apply(add3, 1, 2, 3), " ", $apply(add3, 1)(2, 3), " ", $apply(add3, 1, 2)(3), " ",
+	try $apply(add3, 1)(2) catch e "throws " + e, "\n");
+var partial = $apply(add3, "x");
+$print("partial ", partial("y", "z"), " nargs ", $nargs(partial), "\n");
+var va = $varargs(function(args) { $print("varargs got ", $asize(args), ": ", args, "\n"); $asize(args) });
+va();
+va(1);
+va(1, 2, 3, 4, 5, 6, 7, 8, 9);
+$print("$call ", $call(add3, null, $array(4, 5, 6)), "\n");
+$print("$call varargs ", $call(va, null, $array("a", "b")), "\n");
+$print("$call this ", $call(meth, { v => "via call" }, $array()), "\n");
+$print("too few: ", try add3(1, 2) catch e "throws " + e, "\n");
+$print("too many: ", try add3(1, 2, 3, 4) catch e "throws " + e, "\n");
+$print("$call too many: ", try $call(add3, null, $array(1)) catch e "throws " + e, "\n");
+$print("call null: ", try { var nf = null; nf(1); } catch e "throws " + e, "\n");
+$print("closure too many: ", try $closure(add3, null, 1, 2, 3, 4) catch e "throws " + e, "\n");
+
+// Calls with more than five arguments
+var six = function(a, b, c, d, e, f) $array(a, b, c, d, e, f);
+var ten = function(a, b, c, d, e, f, g, h, i, j) a + b + c + d + e + f + g + h + i + j;
+$print(six(1, 2, 3, 4, 5, 6), " ", ten(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), " nargs ", $nargs(ten), "\n");
+$print("ten with nine: ", try ten(1, 2, 3, 4, 5, 6, 7, 8, 9) catch e "throws " + e, "\n");
+var o = $new(null);
+o.v = 1000;
+o.many = function(a, b, c, d, e, f, g) this.v + a + b + c + d + e + f + g;
+$print("method with seven ", o.many(1, 2, 3, 4, 5, 6, 7), "\n");
+$print("closure of six ", $closure(six, null, "a", "b")(3, 4, 5, 6), "\n");
+
+// Recursion through a closure variable, and functions as values
+// A local is captured by value when the closure is made, so this one sees null
+var lfact = null;
+lfact = function(n) if n <= 1 1 else n * lfact(n - 1);
+$print("local fact: ", try lfact(3) catch e "throws " + e, "\n");
+fact = function(n) if n <= 1 1 else n * fact(n - 1);
+$print("fact 12 ", fact(12), " fact 13 ", fact(13), " fact 20 ", fact(20), "\n");
+var compose = function(f, g) function(x) f(g(x));
+var inc = function(x) x + 1;
+var dbl = function(x) x * 2;
+$print(compose(inc, dbl)(5), " ", compose(dbl, inc)(5), "\n");

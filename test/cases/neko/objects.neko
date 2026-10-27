@@ -1,0 +1,88 @@
+// Objects: fields, prototypes, $objfields order, $objget/$objset/$objremove, $hash and $field
+var o = $new(null);
+o.zeta = 1;
+o.alpha = 2;
+o.mid = 3;
+o.x = 4;
+o.y = 5;
+o.longer_name_here = 6;
+o.__s = 7;
+$print(o, "\n");
+var f = $objfields(o);
+var i = 0;
+while i < $asize(f) {
+	$print($field(f[i]), "=", $objget(o, f[i]), " ");
+	i += 1;
+}
+$print("\n");
+$print("hash of zeta ", $hash("zeta"), " field back ", $field($hash("zeta")), "\n");
+$print("hashes: ", $hash(""), " ", $hash("a"), " ", $hash("ab"), " ", $hash("zzzzzzzzzzzzzzzzzzzz"), " ", $hash("\255\255\255\255"), "\n");
+$print("fasthash: ", $fasthash("a") == $hash("a"), "\n");
+$print("unknown field name: ", $field(12345), "\n");
+$print("missing field: ", o.missing, " ", $objget(o, $hash("missing")), "\n");
+$print("objfield: ", $objfield(o, $hash("alpha")), " ", $objfield(o, $hash("nope")), "\n");
+$objset(o, $hash("dyn"), "set");
+$print("dyn: ", o.dyn, "\n");
+$print("remove alpha: ", $objremove(o, $hash("alpha")), " again: ", $objremove(o, $hash("alpha")), " ", o, "\n");
+o.zeta = null;
+$print("null field kept: ", $objfield(o, $hash("zeta")), " ", o, "\n");
+
+var copy = $new(o);
+copy.added = true;
+$print("copy: ", copy, "\noriginal: ", o, "\n");
+
+// Prototype chains
+var base = $new(null);
+base.greet = function() "base greet " + this.name;
+base.kind = "base";
+var mid = $new(null);
+mid.kind = "mid";
+$objsetproto(mid, base);
+var leaf = $new(null);
+leaf.name = "leaf";
+$objsetproto(leaf, mid);
+$print(leaf.greet(), " ", leaf.kind, " ", $objgetproto(leaf) == mid, " ", $objgetproto(base), "\n");
+$print("own fields: ", $objfields(leaf), " has kind: ", $objfield(leaf, $hash("kind")), "\n");
+leaf.kind = "leaf";
+$print(leaf.kind, " ", mid.kind, "\n");
+base.later = "added later";
+$print(leaf.later, "\n");
+$objsetproto(leaf, null);
+$print("after unsetting: ", leaf.greet, " ", leaf.kind, "\n");
+
+// Methods and this
+var counter = $new(null);
+counter.n = 0;
+counter.inc = function(by) { this.n += by; this };
+counter.inc(1).inc(2).inc(3);
+$print("counter ", counter.n, "\n");
+var m = counter.inc;
+var other = $new(null);
+other.n = 100;
+$print("$call with this: ", $call(m, other, $array(5)).n, "\n");
+$print("$objcall: ", $objcall(counter, $hash("inc"), $array(10)).n, "\n");
+$print("missing method: ", try counter.nope() catch e "throws " + e, "\n");
+$print("call non function: ", try counter.n() catch e "throws " + e, "\n");
+$print("field of null: ", try null.x catch e "throws " + e, "\n");
+$print("field of int: ", try (5).x catch e "throws " + e, "\n");
+$print("set field of null: ", try { var nn = null; nn.x = 1; } catch e "throws " + e, "\n");
+
+// Many fields, in hash order, and reading them back
+var big = $new(null);
+i = 0;
+while i < 60 {
+	$objset(big, $hash("f" + i), i * i);
+	i += 1;
+}
+var fields = $objfields(big);
+$print($asize(fields), " fields:");
+i = 0;
+while i < $asize(fields) {
+	$print(" ", $field(fields[i]));
+	i += 1;
+}
+$print("\n", big.f7, " ", big.f59, "\n");
+var lit = { b => 1, a => 2, c => { d => 3 } };
+$print(lit, " ", lit.c.d, "\n");
+$print("$new of non object: ", try $new(5) catch e "throws " + e, "\n");
+$print("proto of non object: ", try $objsetproto(o, 5) catch e "throws " + e, "\n");

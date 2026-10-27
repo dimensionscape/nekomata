@@ -1,0 +1,11 @@
+// A module other cases load: it counts its loads and exports functions and state
+$print("loaded_a body runs, args ", $loader.args, "\n");
+var count = 0;
+$exports.name = "loaded_a";
+$exports.add = function(a, b) a + b;
+$exports.state = $array(0);
+$exports.bump = function() { $exports.state[0] += 1; $exports.state[0] };
+$exports.loadOther = function() $loader.loadmodule("loaded_b", $loader);
+$exports.thrower = function() $throw("thrown in loaded_a");
+$exports.global = function() typeof_global;
+typeof_global = "a global of loaded_a";

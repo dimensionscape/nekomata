@@ -1,0 +1,10 @@
+// Output written before sys_exit reaches the console, and the exit code comes through
+$print("before exit, no newline");
+var exit = $loader.loadprim("std@sys_exit", 1);
+var print_err = function(s) {
+	var stderr = $loader.loadprim("std@file_stderr", 0)();
+	$loader.loadprim("std@file_write", 4)(stderr, s, 0, $ssize(s));
+};
+print_err("to stderr\n");
+exit(7);
+$print("never\n");

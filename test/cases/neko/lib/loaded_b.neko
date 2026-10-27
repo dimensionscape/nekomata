@@ -1,0 +1,6 @@
+// Loaded by loaded_a: a module loading another
+$print("loaded_b body runs\n");
+$exports.name = "loaded_b";
+$exports.callBack = function(f) f("from loaded_b");
+typeof_global = "a global of loaded_b";
+$exports.global = function() typeof_global;

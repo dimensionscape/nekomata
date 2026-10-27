@@ -1,0 +1,61 @@
+// Tail calls: neko reuses the frame, so a million calls in tail position never grow
+//  the stack
+loop = function(n, acc) {
+	if n == 0 return acc;
+	return loop(n - 1, acc + 1);
+};
+$print("loop 1e6 ", loop(1000000, 0), "\n");
+
+countdown = function(n) if n == 0 "done" else countdown(n - 1);
+$print("expression tail 1e6 ", countdown(1000000), "\n");
+
+even = function(n) if n == 0 true else odd(n - 1);
+odd = function(n) if n == 0 false else even(n - 1);
+$print("mutual 1e6 ", even(1000000), " ", odd(1000001), " ", even(999999), "\n");
+
+// Tail calls that change the number of arguments
+three = function(a, b, c) if a == 0 b + c else one(a - 1);
+one = function(a) if a == 0 "one" else three(a - 1, a, 1);
+$print("changing arity ", one(1000000), " ", one(1000001), "\n");
+
+// A call through a method is an ObjCall, never a tail call, so these stay shallow
+var o = $new(null);
+o.n = 0;
+o.step = function(k) { if k == 0 return this.n; this.n += 1; return this.step(k - 1); };
+$print("method call 10000 ", o.step(10000), "\n");
+var mk = function() {
+	var self = $new(null);
+	self.f = function(k, acc) if k == 0 acc else self.f(k - 1, acc + 2);
+	self
+};
+$print("closure method call 10000 ", mk().f(10000, 0), "\n");
+// A closure variable called in tail position is a TailCall
+var viaVar = function(k) {
+	var f = null;
+	f = function(n) if n == 0 "var done" else g(n - 1);
+	f(k)
+};
+g = function(n) if n == 0 "g done" else g(n - 1);
+$print("closure tail 1e6 ", viaVar(1000000), "\n");
+
+// A tail call with five arguments, the most a TailCall takes
+five = function(a, b, c, d, e) if a == 0 $array(b, c, d, e) else five(a - 1, c, b, e + 1, d);
+$print("five args ", five(1000001, 1, 2, 3, 4), "\n");
+
+// A tail call inside a try is not a tail call, but must still work
+trytail = function(n) {
+	if n == 0 return "end";
+	try return trytail(n - 1) catch e return "caught " + e;
+};
+$print("tail in try 2000 ", trytail(2000), "\n");
+
+// A tail call that throws at the end of a long loop
+throwing = function(n) if n == 0 $throw("thrown after 1e6") else throwing(n - 1);
+$print(try throwing(1000000) catch e e, "\n");
+// Tail calls to builtins and primitives
+var b = function(n) if n == 0 $string(n) else $string(n);
+$print("builtin tail ", b(5), "\n");
+var gcd = function(a, b) if b == 0 a else gcd(b, a % b);
+$print("gcd ", try gcd(1071, 462) catch e e, "\n");
+gcd2 = function(a, b) if b == 0 a else gcd2(b, a % b);
+$print("gcd ", gcd2(1071, 462), " ", gcd2(0x7FFFFFFF, 0x40000000), "\n");

@@ -1,0 +1,107 @@
+// $hnew tables: add, set, get, mem, remove, resize, count, size, key hashing of every
+//  type, custom compare functions and $hiter order
+var h = $hnew(0);
+$print("empty: count ", $hcount(h), " size ", $hsize(h), "\n");
+var i = 0;
+while i < 40 {
+	$hadd(h, i * 7, "v" + i);
+	i += 1;
+}
+$print("count ", $hcount(h), " size ", $hsize(h), "\n");
+$print("get 14 ", $hget(h, 14, null), " get 15 ", $hget(h, 15, null), " mem 21 ", $hmem(h, 21, null), " mem 22 ", $hmem(h, 22, null), "\n");
+$hadd(h, 14, "second 14");
+$print("after hadd twice: ", $hget(h, 14, null), " count ", $hcount(h), "\n");
+$print("hset existing ", $hset(h, 14, "replaced", null), " new ", $hset(h, 1000, "new", null), " count ", $hcount(h), "\n");
+$print("get 14 ", $hget(h, 14, null), "\n");
+$print("remove 14 ", $hremove(h, 14, null), " ", $hget(h, 14, null), " remove 999 ", $hremove(h, 999, null), " count ", $hcount(h), "\n");
+var order = $array();
+n = 0;
+$hiter(h, function(k, v) { $print(k, "=", v, " "); n += 1; });
+$print("\niterated ", n, "\n");
+$hresize(h, 3);
+$print("resized: size ", $hsize(h), " count ", $hcount(h), " get 21 ", $hget(h, 21, null), "\n");
+$hiter(h, function(k, v) $print(k, " "));
+$print("\n");
+$hresize(h, 500);
+$hiter(h, function(k, v) $print(k, " "));
+$print("\nsize ", $hsize(h), "\n");
+
+// Keys of every type hash by value
+var m = $hnew(16);
+var keys = $array(0, 1, -1, 1.5, -0.0, 0.0, "", "a", "ab", "ba", null, true, false, $array(1, 2), $array(1, 2), 0x40000000);
+i = 0;
+while i < $asize(keys) {
+	$hset(m, keys[i], i, null);
+	i += 1;
+}
+$print("mixed keys count ", $hcount(m), "\n");
+i = 0;
+while i < $asize(keys) {
+	$print(keys[i], "->", $hget(m, keys[i], null), " ");
+	i += 1;
+}
+$print("\n");
+$print("$hkey: ", $hkey(0), " ", $hkey(1), " ", $hkey("a"), " ", $hkey("ab"), " ", $hkey(null), " ", $hkey(true), " ", $hkey(1.5), " ",
+	$hkey($array(1, 2)), " ", $hkey(0x40000000), " ", $hkey(-1), "\n");
+$hiter(m, function(k, v) $print(k, ":", v, " "));
+$print("\n");
+
+// A custom compare: case-insensitive string keys
+var lower = function(s) {
+	var r = $scopy(s);
+	var j = 0;
+	while j < $ssize(r) {
+		var c = $sget(r, j);
+		if c >= 65 && c <= 90 $sset(r, j, c + 32);
+		j += 1;
+	}
+	r
+};
+var ci = function(a, b) $compare(lower(a), lower(b));
+var t = $hnew(4);
+var words = $array("Apple", "apple", "APPLE", "Banana", "cherry");
+i = 0;
+while i < $asize(words) {
+	$hset(t, $hkey(lower(words[i])), words[i], null);
+	i += 1;
+}
+$print("hashed by lower: count ", $hcount(t), "\n");
+var calls = 0;
+var cmp = function(a, b) { calls += 1; $compare(a, b) };
+var u = $hnew(8);
+$hset(u, "x", 1, cmp);
+$hset(u, "y", 2, cmp);
+$hset(u, "x", 3, cmp);
+$print("custom cmp: x ", $hget(u, "x", cmp), " y ", $hget(u, "y", cmp), " mem z ", $hmem(u, "z", cmp), "\n");
+var always = function(a, b) 0;
+var w = $hnew(8);
+$hset(w, 1, "one", always);
+$hset(w, 1, "uno", always);
+$print("always equal: ", $hget(w, 1, always), " count ", $hcount(w), "\n");
+var never = function(a, b) 1;
+var z = $hnew(8);
+$hset(z, 1, "one", never);
+$hset(z, 1, "uno", never);
+$print("never equal: get ", $hget(z, 1, never), " count ", $hcount(z), "\n");
+
+// Errors
+$print("hget on non table: ", try $hget(1, 1, null) catch e "throws " + e, "\n");
+$print("hnew negative: ", try $hnew(-1) catch e "throws " + e, "\n");
+$print("hiter non function: ", try $hiter(h, 5) catch e "throws " + e, "\n");
+$print("typeof table: ", $typeof(h), " ", h, "\n");
+
+// Many keys, and remove half
+var big = $hnew(0);
+i = 0;
+while i < 5000 {
+	$hset(big, "k" + i, i, null);
+	i += 1;
+}
+i = 0;
+while i < 5000 {
+	if i % 2 == 0 $hremove(big, "k" + i, null);
+	i += 1;
+}
+total = 0;
+$hiter(big, function(k, v) total += v);
+$print("big count ", $hcount(big), " sum of left ", total, " k4999 ", $hget(big, "k4999", null), " k4998 ", $hget(big, "k4998", null), "\n");

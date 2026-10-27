@@ -1,3 +1,2 @@
--cp src
--cp test
---run Corpus
+# The test harness, as test/harness.hxml: haxe test.hxml [options] [suite...]
+test/harness.hxml

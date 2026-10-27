@@ -1,0 +1,98 @@
+// Mutable strings: $smake, $ssize, $scopy, $ssub, $sget, $sset, $sblit, $sfind and the
+//  binary accessors, inside and outside their bounds
+var show = function(name, f) {
+	try $print(name, " = [", f(), "]\n") catch e $print(name, " throws ", e, "\n");
+};
+var s = "hello world";
+show("ssize", function() $ssize(s));
+show("ssub 0 5", function() $ssub(s, 0, 5));
+show("ssub 6 5", function() $ssub(s, 6, 5));
+show("ssub 6 0", function() $ssub(s, 6, 0));
+show("ssub 11 0", function() $ssub(s, 11, 0));
+show("ssub 6 6", function() $ssub(s, 6, 6));
+show("ssub -1 2", function() $ssub(s, -1, 2));
+show("ssub 12 0", function() $ssub(s, 12, 0));
+show("ssub 0 -1", function() $ssub(s, 0, -1));
+show("ssub float", function() $ssub(s, 1.5, 2));
+show("sget 0", function() $sget(s, 0));
+show("sget 10", function() $sget(s, 10));
+show("sget 11", function() $sget(s, 11));
+show("sget -1", function() $sget(s, -1));
+show("sfind o", function() $sfind(s, 0, "o"));
+show("sfind o from 5", function() $sfind(s, 5, "o"));
+show("sfind o from 8", function() $sfind(s, 8, "o"));
+show("sfind empty", function() $sfind(s, 3, ""));
+show("sfind at end", function() $sfind(s, 11, ""));
+show("sfind past end", function() $sfind(s, 12, "o"));
+show("sfind world", function() $sfind(s, 0, "world"));
+show("sfind longer", function() $sfind(s, 0, "hello world!"));
+show("sfind negative", function() $sfind(s, -1, "h"));
+
+var m = $smake(8);
+show("smake 8 size", function() $ssize(m));
+show("smake bytes", function() { var r = ""; var i = 0; while i < 8 { r += $sget(m, i) + ","; i += 1; } r });
+$sset(m, 0, 65);
+$sset(m, 1, 66 + 256);
+$sset(m, 2, -1);
+show("sset wraps", function() $sget(m, 0) + " " + $sget(m, 1) + " " + $sget(m, 2));
+show("sset out", function() $sset(m, 8, 65));
+show("sset -1", function() $sset(m, -1, 65));
+show("sset returns", function() $sset(m, 3, 67));
+show("sset float", function() $sset(m, 4, 68.9));
+show("smake 0", function() $ssize($smake(0)));
+show("smake negative", function() $smake(-3));
+
+var d = $scopy("0123456789");
+$sblit(d, 2, "abc", 0, 3);
+show("sblit", function() d);
+$sblit(d, 0, "xyz", 1, 2);
+show("sblit sub", function() d);
+show("sblit overlap", function() { var o = $scopy("abcdef"); $sblit(o, 1, o, 0, 4); o });
+show("sblit past dst", function() $sblit(d, 9, "abc", 0, 3));
+show("sblit past src", function() $sblit(d, 0, "abc", 2, 2));
+show("sblit negative", function() $sblit(d, -1, "abc", 0, 1));
+show("sblit zero", function() { $sblit(d, 10, "abc", 3, 0); d });
+
+// Literals are shared, copies are not
+var lit = function() "constant";
+var a = lit();
+$sset(a, 0, 67);
+show("literal after sset", function() lit());
+var c = $scopy("constant");
+$sset(c, 0, 75);
+show("copy after sset", function() c + " " + lit());
+
+// Binary accessors
+var b = $smake(16);
+$sset16(b, 0, 0x1234, false);
+$sset16(b, 2, 0x1234, true);
+$sset32(b, 4, 0x12345678, false);
+$sset32(b, 8, -2, true);
+show("bytes 0..12", function() { var r = ""; var i = 0; while i < 12 { r += $sget(b, i) + " "; i += 1; } r });
+show("sget16", function() $sget16(b, 0, false) + " " + $sget16(b, 2, true) + " " + $sget16(b, 2, false));
+show("sget32", function() $sget32(b, 4, false) + " " + $sget32(b, 8, true) + " " + $sget32(b, 4, true));
+show("sget16 out", function() $sget16(b, 15, false));
+show("sget32 out", function() $sget32(b, 13, false));
+var fb = $smake(12);
+$ssetf(fb, 0, 1.5, false);
+$ssetd(fb, 4, 3.25, false);
+show("sgetf/sgetd", function() $sgetf(fb, 0, false) + " " + $sgetd(fb, 4, false));
+$ssetd(fb, 4, 0.1, true);
+show("sgetd big endian", function() $sgetd(fb, 4, true));
+show("itof/ftoi", function() $itof(0x3FC00000, false) + " " + $ftoi(1.5, false) + " " + $ftoi(-2.0, false));
+show("itod/dtoi", function() { var p = $array(0, 0); $dtoi(1.5, p, false); $itod(p[0], p[1], false) + " " + p[0] + "," + p[1] });
+show("isbigendian", function() $isbigendian());
+
+// Concatenation and conversions of mutable strings
+var built = "";
+var i = 0;
+while i < 1000 {
+	built += $string(i % 10);
+	i += 1;
+}
+show("built size", function() $ssize(built));
+show("built sub", function() $ssub(built, 995, 5));
+show("string of bytes", function() { var r = $smake(3); $sset(r, 0, 0); $sset(r, 1, 200); $sset(r, 2, 10); $ssize(r) + " " + $sget(r, 1) });
+show("compare with nul", function() $compare("a\000b", "a\000c") + " " + $compare("a\000", "a"));
+show("ssize non string", function() $ssize(5));
+show("sub non string", function() $ssub(5, 0, 1));

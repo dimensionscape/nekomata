@@ -1,0 +1,16 @@
+// Caught, then rethrown and left uncaught, from inside a loop and a closure
+var work = function(items) {
+	var i = 0;
+	while i < $asize(items) {
+		try {
+			if items[i] == null $throw("null item at " + i);
+			$print("item ", items[i], "\n");
+		} catch e {
+			$print("handling ", e, "\n");
+			$rethrow(e);
+		}
+		i += 1;
+	}
+};
+var run = function(f) f($array(1, 2, null, 4));
+run(work);

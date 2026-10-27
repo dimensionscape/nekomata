@@ -1,0 +1,34 @@
+// $loader.loadmodule of modules next to this one, the module cache, exports, globals per
+//  module, and modules that are missing or fail as they load
+typeof_global = "the main module's global";
+$print("loader is ", $typeof($loader), ", exports is ", $typeof($exports), "\n");
+var a = $loader.loadmodule("loaded_a", $loader);
+$print("name ", a.name, " add ", a.add(2, 3), " bump ", a.bump(), " ", a.bump(), "\n");
+var again = $loader.loadmodule("loaded_a", $loader);
+$print("cached: ", again == a, " bump ", again.bump(), "\n");
+var b = a.loadOther();
+$print("b ", b.name, " ", b.callBack(function(s) "got " + s), "\n");
+$print("globals: ", typeof_global, " / ", a.global(), " / ", b.global(), "\n");
+$print("throw across modules: ", try a.thrower() catch e e, "\n");
+$print("with .n: ", $loader.loadmodule("loaded_b.n", $loader) == b, "\n");
+$print("missing: ", try $loader.loadmodule("not_a_module", $loader) catch e e, "\n");
+$print("failing: ", try $loader.loadmodule("loaded_fails", $loader) catch e e, "\n");
+$print("failing again: ", try { var f = $loader.loadmodule("loaded_fails", $loader); "cached " + f.partial } catch e e, "\n");
+$print("bad name: ", try $loader.loadmodule(5, $loader) catch e e, "\n");
+
+// A fresh cache loads the module again
+$loader.cache = $new(null);
+var fresh = $loader.loadmodule("loaded_a", $loader);
+$print("fresh: ", fresh == a, " bump ", fresh.bump(), "\n");
+
+// A loader of our own, delegating to the real one
+var mine = $new(null);
+mine.args = $array("custom", "args");
+mine.path = $loader.path;
+mine.cache = $new(null);
+mine.loadprim = function(p, n) { $print("[loadprim ", p, " ", n, "]"); $loader.loadprim(p, n) };
+mine.loadmodule = function(name, l) { $print("[loadmodule ", name, "]"); $loader.loadmodule(name, l) };
+var viaMine = $loader.loadmodule("loaded_a", mine);
+$print("\nvia my loader: ", viaMine.name, "\n");
+$exports.done = true;
+$print("my exports: ", $exports, "\n");

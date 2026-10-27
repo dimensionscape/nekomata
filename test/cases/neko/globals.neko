@@ -1,0 +1,39 @@
+// Globals, module level code, $exports, $version and the loader's arguments, path and
+//  cache
+// args: first second "third arg" 4
+counter = 0;
+var bump = function() { counter += 1; counter };
+bump();
+bump();
+$print("counter ", counter, "\n");
+undefined_global_read = undefined_global_read;
+$print("unset global ", undefined_global_read, "\n");
+$print("args ", $loader.args, " size ", $asize($loader.args), "\n");
+var i = 0;
+while i < $asize($loader.args) {
+	$print("  [", $loader.args[i], "] ", $typeof($loader.args[i]), "\n");
+	i += 1;
+}
+$print("version ", $version(), "\n");
+$print("build year type ", $typeof($neko_build_year()), "\n");
+$print("loader fields ", $typeof($loader.loadmodule), " ", $typeof($loader.loadprim), " ", $typeof($loader.path), " ", $typeof($loader.cache), "\n");
+$print("exports ", $exports, "\n");
+$exports.answer = 42;
+$print("exports after ", $exports.answer, "\n");
+// Functions defined at module level see globals assigned later
+var later = function() assigned_later;
+assigned_later = "assigned after the function";
+$print(later(), "\n");
+// Locals shadow globals
+shadowed = "global";
+var shadow = function() { var shadowed = "local"; shadowed };
+$print(shadow(), " ", shadowed, "\n");
+// Many locals in one function, past what fits in a small frame
+var many = function() {
+	var a0 = 0; var a1 = 1; var a2 = 2; var a3 = 3; var a4 = 4; var a5 = 5; var a6 = 6; var a7 = 7; var a8 = 8; var a9 = 9;
+	var b0 = 10; var b1 = 11; var b2 = 12; var b3 = 13; var b4 = 14; var b5 = 15; var b6 = 16; var b7 = 17; var b8 = 18; var b9 = 19;
+	var c0 = 20; var c1 = 21; var c2 = 22; var c3 = 23; var c4 = 24; var c5 = 25; var c6 = 26; var c7 = 27; var c8 = 28; var c9 = 29;
+	a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + b9 + c0 + c1 + c2 + c3 + c4 + c5
+		+ c6 + c7 + c8 + c9
+};
+$print("many locals ", many(), "\n");

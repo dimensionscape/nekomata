@@ -1,0 +1,13 @@
+// An uncaught object, array and nested function frames, thrown from a method
+var o = $new(null);
+o.code = 42;
+o.items = $array(1, "two", 3.5);
+o.__string = function() "Error(" + this.code + ")";
+var thrower = $new(null);
+thrower.go = function(n) {
+	if n == 0 $throw(o);
+	this.go(n - 1);
+	0
+};
+$print("start\n");
+thrower.go(3);

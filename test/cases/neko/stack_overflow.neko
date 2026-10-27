@@ -1,0 +1,10 @@
+// Unbounded recursion: neko raises an exception the program can catch, and runs on
+forever = function(n) 1 + forever(n + 1);
+$print("first: ", try forever(0) catch e e, "\n");
+$print("second: ", try forever(0) catch e e, "\n");
+var deep = function(n) if n == 0 0 else 1 + deep(n - 1);
+deeper = function(n) if n == 0 0 else 1 + deeper(n - 1);
+$print("still works: ", deeper(10000), "\n");
+var o = $new(null);
+o.m = function() this.m() + 1;
+$print("method: ", try o.m() catch e e, "\n");

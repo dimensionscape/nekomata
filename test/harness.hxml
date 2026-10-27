@@ -1,0 +1,5 @@
+# Nekomata's test harness, run from the repository root:
+#  haxe test/harness.hxml [options] [suite[:filter]...]   (--help lists the options)
+-cp src
+-cp test
+--run Harness

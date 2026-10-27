@@ -1,0 +1,4 @@
+// A module whose body throws while it loads
+$print("loaded_fails starts\n");
+$exports.partial = true;
+$throw("loaded_fails gives up");

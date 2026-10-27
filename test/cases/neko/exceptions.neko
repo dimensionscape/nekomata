@@ -1,0 +1,108 @@
+// Exceptions: through several frames, every kind of value, $rethrow, traps in loops,
+//  and returning or breaking out of a try
+a = function(x) { $print("a in "); var r = b(x); $print("a out "); r };
+b = function(x) { $print("b in "); var r = c(x); $print("b out "); r };
+c = function(x) { $print("c "); if x != null $throw(x); "no throw" };
+$print(try a(null) catch e "caught " + e, "\n");
+$print(try a("boom") catch e "caught " + e, "\n");
+// Only true is true to if, while and the boolean operators
+var truth = $array(true, false, null, 0, 1, -1, "", "s", 0.0, $array(), $new(null));
+var i = 0;
+while i < $asize(truth) {
+	var t = truth[i];
+	$print(t, ": if ", if t "yes" else "no", ", && ", t && true, ", || ", t || false, ", $istrue ", $istrue(t), ", $not ", $not(t), "\n");
+	i += 1;
+}
+
+var values = $array(1, 2.5, "s", null, true, $array(1, 2), { x => 1 }, function() 0);
+var i = 0;
+while i < $asize(values) {
+	var got = try $throw(values[i]) catch e e;
+	$print("threw ", got, " typeof ", $typeof(got), "\n");
+	i += 1;
+}
+$print("throw null: ", try { $throw(null); "after" } catch e "caught " + e, "\n");
+
+// $rethrow keeps the value
+var r = try {
+	try $throw("inner") catch e { $print("inner handler saw ", e, "\n"); $rethrow(e); }
+} catch e2 "outer got " + e2;
+$print(r, "\n");
+
+// Nested handlers, the innermost catches first
+var depth = 0;
+var nested = try {
+	try {
+		try $throw(1) catch e { depth += 1; $throw(e + 1); }
+	} catch e { depth += 10; $throw(e + 1); }
+} catch e { depth += 100; e };
+$print("nested ", nested, " depth ", depth, "\n");
+
+// A trap in a loop, with break and continue out of it
+var log = $array();
+i = 0;
+var out = "";
+while i < 10 {
+	try {
+		if i == 2 { i += 1; continue; }
+		if i == 7 break;
+		if i % 3 == 0 $throw("t" + i);
+		out += "ok" + i + " ";
+	} catch e out += "caught " + e + " ";
+	i += 1;
+}
+$print(out, "\n");
+var traps = 0;
+i = 0;
+while i < 100000 {
+	try { if i % 1000 == 0 $throw(i); traps += 1; } catch e traps -= 1;
+	i += 1;
+}
+$print("many traps ", traps, "\n");
+
+// Return and break from inside a try leave the handler behind
+var f = function(x) {
+	try {
+		if x == 1 return "returned from try";
+		$throw("thrown");
+	} catch e return "returned from catch " + e;
+	"fell through"
+};
+$print(f(1), " / ", f(2), "\n");
+var g = function() {
+	var k = 0;
+	while true {
+		try { k += 1; if k == 5 break; } catch e { $print("never"); }
+	}
+	// The handler from the loop must be gone: this throw reaches our caller
+	$throw("after loop " + k);
+};
+$print(try g() catch e e, "\n");
+
+// Exceptions from builtins and operations
+var probes = $array(
+	function() 1 + null,
+	function() $asub($array(1, 2), 1, 5),
+	function() $smake(-1),
+	function() $sget("abc", "x"),
+	function() $array(1)[0](),
+	function() $objsetproto(1, null),
+	function() $loader.loadmodule("does_not_exist", $loader),
+	function() $hget(null, 1, null),
+	function() $int(),
+	function() $throw($new(null))
+);
+i = 0;
+while i < $asize(probes) {
+	$print("probe ", i, ": ", try { probes[i](); "no exception" } catch e e, "\n");
+	i += 1;
+}
+
+// The exception stack while handling
+var stack = function() $throw("for the stack");
+try stack() catch e {
+	var s = $excstack();
+	$print("excstack is ", $typeof(s) == $tarray, " with ", $asize(s) > 0, "\n");
+}
+var cs = $callstack();
+$print("callstack is ", $typeof(cs) == $tarray, "\n");

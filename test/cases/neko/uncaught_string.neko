@@ -1,0 +1,14 @@
+// An uncaught exception three calls deep: neko prints where it came from and exits 1
+var inner = function(x) {
+	$print("about to throw\n");
+	$throw("failure in inner: " + x);
+};
+var middle = function(x) {
+	var y = x * 2;
+	inner(y);
+	$print("never printed\n");
+};
+var outer = function() {
+	middle(21);
+};
+outer();

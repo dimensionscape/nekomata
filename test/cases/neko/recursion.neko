@@ -1,0 +1,39 @@
+// Deep recursion that is not a tail call: tens of thousands of frames
+sum = function(n) if n == 0 0 else n + sum(n - 1);
+$print("sum 10000 ", sum(10000), "\n");
+$print("sum 30000 ", sum(30000), "\n");
+
+depth = function(n, acc) {
+	if n == 0 return acc;
+	var r = depth(n - 1, acc + 1);
+	r
+};
+$print("depth 30000 ", depth(30000, 0), "\n");
+
+// Recursion through a method and through $call
+var o = $new(null);
+o.count = function(n) if n == 0 0 else 1 + this.count(n - 1);
+$print("method 20000 ", o.count(20000), "\n");
+viacall = function(n) if n == 0 "bottom" else $call(viacall, null, $array(n - 1));
+// Each $call goes through C, whose stack neko limits far more tightly
+$print("$call 300 ", viacall(300), "\n");
+$print("$call 100000: ", try viacall(100000) catch e e, "\n");
+
+// Mutual recursion, not in tail position
+isEven = function(n) if n == 0 true else isOdd(n - 1) == true;
+isOdd = function(n) if n == 0 false else isEven(n - 1) == true;
+$print("mutual 20001 ", isOdd(20001), "\n");
+
+// Ackermann: deep and wide
+ack = function(m, n) {
+	if m == 0 return n + 1;
+	if n == 0 return ack(m - 1, 1);
+	return ack(m - 1, ack(m, n - 1));
+};
+$print("ack(2, 300) ", ack(2, 300), " ack(3, 5) ", ack(3, 5), "\n");
+
+// An exception from the bottom of a deep stack
+thrower = function(n) if n == 0 $throw("from the bottom") else 1 + thrower(n - 1);
+$print("deep throw: ", try thrower(20000) catch e e, "\n");
+// The stack is usable again after unwinding
+$print("sum again ", sum(20000), "\n");

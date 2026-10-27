@@ -1,0 +1,86 @@
+// $compare and $pcompare across types, NaN, objects with __compare, and a sort built on them
+var nan = 0.0 / 0.0;
+var o1 = $new(null);
+var o2 = $new(null);
+var a1 = $array(1, 2);
+var a2 = $array(1, 2);
+var f = function() 1;
+var values = $array(0, 1, -1, 1.0, 0.5, nan, 1.0 / 0, "", "a", "b", "ab", "A", null, true, false, o1, o2, a1, a2, f, 0x40000000, 0x7FFFFFFF);
+var names = $array("0", "1", "-1", "1.0", "0.5", "nan", "inf", "\"\"", "\"a\"", "\"b\"", "\"ab\"", "\"A\"", "null", "true", "false", "o1", "o2", "a1", "a2", "f", "int32a", "int32b");
+
+var i = 0;
+while i < $asize(values) {
+	var j = 0;
+	$print(names[i], ":");
+	while j < $asize(values) {
+		$print(" ", $compare(values[i], values[j]));
+		j += 1;
+	}
+	$print("\n");
+	i += 1;
+}
+
+// Physical comparison of ints and the same value; anything else compares addresses
+var sign = function(p) if p < 0 { -1 } else if p > 0 { 1 } else { 0 };
+$print("$pcompare ints: ", sign($pcompare(1, 2)), " ", sign($pcompare(2, 1)), " ", sign($pcompare(-5, -5)), " ",
+	sign($pcompare(0x40000000, 1)), "\n");
+$print("$pcompare same: ", $pcompare(o1, o1), " ", $pcompare(a1, a1), " ", $pcompare(f, f), " ", $pcompare(null, null), "\n");
+$print("$pcompare other: ", $pcompare(o1, o2) != 0, " ", $pcompare(a1, a2) != 0, "\n");
+
+$print("nan == nan ", nan == nan, ", nan != nan ", nan != nan, ", nan < 1 ", nan < 1, ", nan >= 1 ", nan >= 1, "\n");
+$print("o1 == o1 ", o1 == o1, ", o1 == o2 ", o1 == o2, ", a1 == a2 ", a1 == a2, ", f == f ", f == f, "\n");
+$print("\"ab\" == \"ab\" ", "ab" == "ab", ", $pcompare same string ", $pcompare("ab", "ab"), "\n");
+
+var c1 = $new(null);
+c1.v = 10;
+c1.__compare = function(o) { $print("[cmp ", this.v, " to ", o, "]"); if $typeof(o) == $tobject this.v - o.v else 1; };
+var c2 = $new(null);
+c2.v = 3;
+c2.__compare = c1.__compare;
+$print("c1 < c2 ", c1 < c2, "\n");
+$print("c1 > c2 ", c1 > c2, "\n");
+$print("c1 == c2 ", c1 == c2, "\n");
+$print("c1 == 5 ", c1 == 5, "\n");
+$print("$compare(c1, c2) ", $compare(c1, c2), "\n");
+$print("$compare(c1, \"x\") ", $compare(c1, "x"), "\n");
+var bad = $new(null);
+bad.__compare = function(o) "not an int";
+$print("bad compare: ", try $compare(bad, c1) catch e "throws " + e, "\n");
+var nulls = $new(null);
+nulls.__compare = function(o) null;
+$print("null compare: ", $compare(nulls, c1), " ", nulls < c1, " ", nulls == c1, "\n");
+
+// Insertion sort through $compare, on mixed numbers
+var data = $array(5, 2.5, -1, 1073741823, 0x40000000, 0, -0.0, 3, 2, 100.0, -7.25);
+var n = $asize(data);
+i = 1;
+while i < n {
+	var v = data[i];
+	var j = i - 1;
+	while j >= 0 && $compare(data[j], v) > 0 {
+		data[j + 1] = data[j];
+		j -= 1;
+	}
+	data[j + 1] = v;
+	i += 1;
+}
+$print(data, "\n");
+var words = $array("pear", "Apple", "apple", "", "banana", "pe", "\255", "a\000b", "a");
+n = $asize(words);
+i = 1;
+while i < n {
+	var v = words[i];
+	var j = i - 1;
+	while j >= 0 && $compare(words[j], v) > 0 {
+		words[j + 1] = words[j];
+		j -= 1;
+	}
+	words[j + 1] = v;
+	i += 1;
+}
+i = 0;
+while i < n {
+	$print("[", $ssize(words[i]), "]", words[i], " ");
+	i += 1;
+}
+$print("\n");

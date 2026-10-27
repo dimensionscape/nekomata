@@ -1,0 +1,114 @@
+// switch: dense int cases (a JumpTable), sparse ones, negatives, defaults, strings,
+//  floats and values switch compares with ==
+var dense = function(x) switch x {
+	0 => "zero"
+	1 => "one"
+	2 => "two"
+	3 => "three"
+	4 => "four"
+	5 => "five"
+	6 => "six"
+	7 => "seven"
+	8 => "eight"
+	9 => "nine"
+	10 => "ten"
+	11 => "eleven"
+	12 => "twelve"
+	13 => "thirteen"
+	14 => "fourteen"
+	15 => "fifteen"
+	16 => "sixteen"
+	17 => "seventeen"
+	18 => "eighteen"
+	19 => "nineteen"
+	20 => "twenty"
+	21 => "twenty-one"
+	22 => "twenty-two"
+	23 => "twenty-three"
+	24 => "twenty-four"
+	25 => "twenty-five"
+	26 => "twenty-six"
+	27 => "twenty-seven"
+	28 => "twenty-eight"
+	29 => "twenty-nine"
+	30 => "thirty"
+	31 => "thirty-one"
+	default => "other " + x
+};
+var nodefault = function(x) switch x {
+	0 => "a"
+	1 => "b"
+	2 => "c"
+	3 => "d"
+	4 => "e"
+	5 => "f"
+	6 => "g"
+	7 => "h"
+	8 => "i"
+};
+var sparse = function(x) switch x {
+	-5 => "minus five"
+	0 => "zero"
+	7 => "seven"
+	100 => "hundred"
+	1000000 => "million"
+	0x40000000 => "int32"
+	default => "default"
+};
+var strings = function(x) switch x {
+	"a" => 1
+	"bb" => 2
+	"" => 3
+	null => 4
+	true => 5
+	1.5 => 6
+	default => 0
+};
+var holes = function(x) switch x {
+	1 => "one"
+	3 => "three"
+	5 => "five"
+	7 => "seven"
+	9 => "nine"
+	11 => "eleven"
+	default => "hole"
+};
+
+var i = -3;
+while i < 36 {
+	$print(i, ":", dense(i), ":", nodefault(i), ":", holes(i), " ");
+	i += 1;
+}
+$print("\n");
+var probes = $array(-5, 0, 7, 100, 1000000, 0x40000000, 0x40000001, 7.0, "7", null, -6);
+i = 0;
+while i < $asize(probes) {
+	$print(probes[i], "=>", sparse(probes[i]), " ");
+	i += 1;
+}
+$print("\n");
+probes = $array("a", "bb", "", null, true, 1.5, "c", false, 0, $array());
+i = 0;
+while i < $asize(probes) {
+	$print(probes[i], "=>", strings(probes[i]), " ");
+	i += 1;
+}
+$print("\n");
+$print("float key in dense: ", dense(3.0), " ", dense(3.5), " ", dense("3"), "\n");
+
+// switch as a statement, with side effects in the subject and the cases
+count = 0;
+next = function() { count += 1; count };
+i = 0;
+while i < 5 {
+	switch next() {
+		1 => $print("first ")
+		2 => $print("second ")
+		default => $print("later ")
+	}
+	i += 1;
+}
+$print("count ", count, "\n");
+side = 0;
+effect = function(v) { side += 1; v };
+$print(switch 3 { effect(1) => "one" effect(3) => "three" effect(5) => "five" }, " side ", side, "\n");

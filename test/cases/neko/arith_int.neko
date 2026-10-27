@@ -1,0 +1,79 @@
+// Int arithmetic: 31-bit tagged ints, overflow into int32, and the 32-bit wrap
+var show = function(name, f) {
+	try $print(name, " = ", f(), " (", $typeof(f()) == $tint, ")\n") catch e $print(name, " throws ", e, "\n");
+};
+
+show("1 + 2", function() 1 + 2);
+show("max31 + 1", function() 1073741823 + 1);
+show("min31 - 1", function() -1073741824 - 1);
+show("max31 * 2", function() 1073741823 * 2);
+show("max32 + 1", function() 0x7FFFFFFF + 1);
+show("min32 - 1", function() 0x80000000 - 1);
+show("0xFFFFFFFF", function() 0xFFFFFFFF);
+show("0x40000000", function() 0x40000000);
+show("0x3FFFFFFF + 0x3FFFFFFF", function() 0x3FFFFFFF + 0x3FFFFFFF);
+show("big * big", function() 65536 * 65536);
+show("46341 * 46341", function() 46341 * 46341);
+show("-46341 * 46341", function() -46341 * 46341);
+show("100000 * 100000", function() 100000 * 100000);
+show("7 / 2", function() 7 / 2);
+show("8 / 2", function() 8 / 2);
+show("-7 / 2", function() -7 / 2);
+show("1 / 0", function() 1 / 0);
+show("-1 / 0", function() -1 / 0);
+show("0 / 0", function() 0 / 0);
+show("7 % 3", function() 7 % 3);
+show("-7 % 3", function() -7 % 3);
+show("7 % -3", function() 7 % -3);
+show("-7 % -3", function() -7 % -3);
+show("7 % 0", function() 7 % 0);
+show("0x7FFFFFFF % 7", function() 0x7FFFFFFF % 7);
+show("1 << 30", function() 1 << 30);
+show("1 << 31", function() 1 << 31);
+show("1 << 32", function() 1 << 32);
+show("1 << 33", function() 1 << 33);
+show("-1 >> 1", function() -1 >> 1);
+show("-1 >>> 1", function() -1 >>> 1);
+show("-1 >>> 0", function() -1 >>> 0);
+show("-16 >> 2", function() -16 >> 2);
+show("0x80000000 >> 4", function() 0x80000000 >> 4);
+show("0x80000000 >>> 4", function() 0x80000000 >>> 4);
+show("0x0F0F & 0x00FF", function() 0x0F0F & 0x00FF);
+show("0x0F0F | 0xF000", function() 0x0F0F | 0xF000);
+show("0x0F0F ^ 0xFFFF", function() 0x0F0F ^ 0xFFFF);
+show("0xFFFFFFFF & 0x7FFFFFFF", function() 0xFFFFFFFF & 0x7FFFFFFF);
+show("0x40000000 | 1", function() 0x40000000 | 1);
+show("-(0x80000000)", function() -(0x80000000));
+show("0 - 0x80000000", function() 0 - 0x80000000);
+show("-1073741824 * -1", function() -1073741824 * -1);
+show("$iadd(1, 2)", function() $iadd(1, 2));
+show("$isub(5, 7)", function() $isub(5, 7));
+show("$imult(65536, 65536)", function() $imult(65536, 65536));
+show("$idiv(7, 2)", function() $idiv(7, 2));
+show("$idiv(-7, 2)", function() $idiv(-7, 2));
+show("$idiv(7, 0)", function() $idiv(7, 0));
+show("$imult(0x40000000, 2)", function() $imult(0x40000000, 2));
+
+// Accumulating past 31 and then 32 bits in a loop
+var i = 0;
+var x = 1;
+while i < 40 {
+	$print(i, ":", x, " ");
+	x = x * 3 + 1;
+	i += 1;
+}
+$print("\n");
+var s = 0;
+i = 0;
+while i < 100000 {
+	s = s + i * i;
+	i += 1;
+}
+$print("sum of squares ", s, "\n");
+var h = 0;
+i = 0;
+while i < 1000 {
+	h = (h * 31 + i) & 0xFFFFFFFF;
+	i += 1;
+}
+$print("hash ", h, "\n");

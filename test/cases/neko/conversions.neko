@@ -1,0 +1,58 @@
+// $int, $float, $string and $typeof on every kind of value
+var show = function(name, f) {
+	try {
+		var v = f();
+		$print(name, " = ", v, " (", $typeof(v), ")\n");
+	} catch e $print(name, " throws ", e, "\n");
+};
+var ints = $array("0", "1", "-1", "+5", "12abc", "abc", "", " 12", "12 ", "0x1F", "0X1f", "0x", "-0x10", "1e3", "1.9", "-1.9",
+	"2147483647", "2147483648", "4294967296", "-2147483649", "99999999999", "0x7FFFFFFF", "0xFFFFFFFF", "0x100000000", "007",
+	"\t3", "--1", "1_000");
+var i = 0;
+while i < $asize(ints) {
+	show("$int \"" + ints[i] + "\"", function() $int(ints[i]));
+	i += 1;
+}
+var floats = $array("0", "1.5", "-1.5", ".5", "5.", "1e3", "1E-2", "1e", "abc", "", " 2.5", "2.5x", "inf", "nan", "-0", "0x10",
+	"1e400", "-1e400", "123456789012345678901234567890");
+i = 0;
+while i < $asize(floats) {
+	show("$float \"" + floats[i] + "\"", function() $float(floats[i]));
+	i += 1;
+}
+show("$int 1.9", function() $int(1.9));
+show("$int -1.9", function() $int(-1.9));
+show("$int 1e10", function() $int(10000000000.0));
+show("$int -1e10", function() $int(-10000000000.0));
+show("$int 2147483648.0", function() $int(2147483648.0));
+show("$int nan", function() $int(0.0 / 0.0));
+show("$int inf", function() $int(1.0 / 0.0));
+show("$int null", function() $int(null));
+show("$int true", function() $int(true));
+show("$int array", function() $int($array(1)));
+show("$int int32", function() $int(0x40000000));
+show("$float 3", function() $float(3));
+show("$float int32", function() $float(0x7FFFFFFF));
+show("$float null", function() $float(null));
+show("$float 2.5", function() $float(2.5));
+show("$string 1", function() $string(1));
+show("$string 1.0", function() $string(1.0));
+show("$string null", function() $string(null));
+show("$string true", function() $string(true));
+show("$string array", function() $string($array(1, "a")));
+show("$string object", function() $string({ a => 1 }));
+show("$string function", function() $string(function(a) a));
+show("$string string", function() $string("same"));
+
+var values = $array(null, 0, 1.5, true, "s", { a => 1 }, $array(), function() 0, $loader, $hnew(1), 0x40000000);
+i = 0;
+while i < $asize(values) {
+	$print($typeof(values[i]), " ");
+	i += 1;
+}
+$print("\n");
+$print("constants: ", $tnull, " ", $tint, " ", $tfloat, " ", $tbool, " ", $tstring, " ", $tobject, " ", $tarray, " ", $tfunction,
+	" ", $tabstract, "\n");
+$print("isnan ", $isnan(0.0 / 0.0), " ", $isnan(1.0), " ", $isnan(1), " ", $isnan("x"), "\n");
+$print("isinfinite ", $isinfinite(1.0 / 0.0), " ", $isinfinite(-1.0 / 0.0), " ", $isinfinite(1.0), " ", $isinfinite(0.0 / 0.0), " ",
+	$isinfinite(5), "\n");

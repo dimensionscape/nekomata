@@ -1,4 +1,4 @@
-class Hello {
+class CaseHello {
 	static function main() {
 		var parts = ["hello", "from", "haxe"];
 		var total = 0;
