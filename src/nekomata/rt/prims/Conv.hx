@@ -65,8 +65,13 @@ class Conv {
 
 	public static function object(fields:Array<{name:String, value:Dynamic}>):NObject {
 		var o = new NObject();
-		for (f in fields)
-			o.fields.set(nekomata.neko.Hash.field(f.name), f.value);
+		for (f in fields) {
+			var h = nekomata.neko.Hash.field(f.name);
+			// Neko names a field when a library hashes it, so $print shows the name
+			if (Rt.knownFieldName(h) == null)
+				Rt.registerFields([f.name]);
+			o.fields.set(h, f.value);
+		}
 		return o;
 	}
 
