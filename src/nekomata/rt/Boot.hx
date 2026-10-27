@@ -38,6 +38,9 @@ class Boot {
 	// The path of the module the host was asked to run, for std@sys_program_path
 	public static var programPath:String;
 
+	// What std@sys_exe_path gives in place of the host's own path, when set
+	public static var exePath:Null<String>;
+
 	// The module the host is about to run. Its main takes it before running any code,
 	//  so a module it loads in turn does not replace it
 	public static var pending:NModule;

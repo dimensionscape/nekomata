@@ -14,33 +14,159 @@ import nekomata.rt.Values;
 // Named neko (neko.exe), it takes neko's command line instead, so it can stand in for
 //  neko. With a module attached to it, by nekomata boot or nekotools boot, it runs that
 //  module with all of its arguments.
-// Neko code can recurse as deep as neko allows, so Windows gets a native stack that
-//  matches: 256M reserved, committed only as it is used, for the main thread and
-//  every thread the program starts
+// Neko code can recurse as deep as neko allows, so it gets a native stack that matches:
+//  256M reserved, committed only as it is used. Windows sets it for the main thread and
+//  every thread the program starts. Elsewhere the main thread keeps the 8M the system
+//  gives it, so modules run on a thread of their own with that stack, and on Linux the
+//  threads a program starts get it too
 @:buildXml('<target id="haxe"><flag value="-STACK:268435456" if="windows"/></target>')
+@:cppFileCode('
+#ifndef _WIN32
+#include <pthread.h>
+
+static const size_t NK_STACK_SIZE = 256 << 20;
+
+struct nk_stack_run
+{
+   ::Dynamic fn;
+   int result;
+   ::Dynamic thrown;
+   bool threw;
+};
+
+static void *nk_stack_main(void *inArg)
+{
+   nk_stack_run *run = (nk_stack_run *)inArg;
+   int top = 0;
+   ::hx::SetTopOfStack(&top, true);
+   try
+   {
+      run->result = run->fn();
+   }
+   catch(::Dynamic e)
+   {
+      run->thrown = e;
+      run->threw = true;
+   }
+   ::hx::UnregisterCurrentThread();
+   return 0;
+}
+#endif
+
+// Runs inFn, which gives an exit code, with NK_STACK_SIZE of native stack; what it
+//  throws is thrown on to the caller
+static int nk_on_big_stack(::Dynamic inFn)
+{
+   #ifdef _WIN32
+   return inFn();
+   #else
+   #ifdef __linux__
+   static bool defaulted = false;
+   if (!defaulted)
+   {
+      defaulted = true;
+      pthread_attr_t def;
+      if (pthread_getattr_default_np(&def) == 0)
+      {
+         pthread_attr_setstacksize(&def, NK_STACK_SIZE);
+         pthread_setattr_default_np(&def);
+         pthread_attr_destroy(&def);
+      }
+   }
+   #endif
+   nk_stack_run run;
+   run.fn = inFn;
+   run.result = 0;
+   run.threw = false;
+   ::hx::GCAddRoot(&run.fn.mPtr);
+   ::hx::GCAddRoot(&run.thrown.mPtr);
+   ::hx::GCPrepareMultiThreaded();
+   pthread_attr_t attr;
+   pthread_attr_init(&attr);
+   pthread_attr_setstacksize(&attr, NK_STACK_SIZE);
+   pthread_t t;
+   bool started = pthread_create(&t, &attr, nk_stack_main, &run) == 0;
+   pthread_attr_destroy(&attr);
+   if (started)
+   {
+      ::hx::EnterGCFreeZone();
+      pthread_join(t, 0);
+      ::hx::ExitGCFreeZone();
+   }
+   ::Dynamic fn = run.fn, thrown = run.thrown;
+   ::hx::GCRemoveRoot(&run.fn.mPtr);
+   ::hx::GCRemoveRoot(&run.thrown.mPtr);
+   if (!started)
+      return fn();
+   if (run.threw)
+      ::hx::Throw(thrown);
+   return run.result;
+   #endif
+}
+')
 class Main {
 	// The neko this host stands in for, as $version and neko -version give it
 	static inline var VERSION = "2.4.1";
 
 	static var moduleCount = 0;
 	static var emitTo:Null<String>;
+	static var onBigStack = false;
 
 	static function main() {
-		var args = Sys.args();
-		// The JIT is on unless -interp or NEKOMATA_JIT=0 turns it off, the switch for what
-		//  haxelib starts as neko, which takes no host options. Where it cannot get
-		//  executable memory, modules run in the interpreter without a notice
+		var code = run(Sys.args());
+		if (code != 0)
+			Sys.exit(code);
+	}
+
+	// What the host does with its command line, or as neko with neko's, giving the exit
+	//  code it ends with. A module that calls Sys.exit, or nekomata boot that fails, ends the
+	//  process itself
+	public static function run(args:Array<String>):Int
+		return bigStack(() -> command(args.copy()));
+
+	// Runs the neko module at path with args, as neko runs it: the exit code, with an
+	//  exception nothing caught reported on stderr as neko reports it. The JIT is on
+	//  unless NEKOMATA_JIT=0
+	public static function runModule(path:String, args:Array<String>):Int
+		return bigStack(() -> {
+			setUpJit();
+			return runNeko(path, args.copy(), false);
+		});
+
+	// What std@sys_exe_path gives, the host's own path unless set, as a program that runs
+	//  modules inside itself can name the neko it stands in for
+	public static function setExePath(path:Null<String>)
+		Boot.exePath = path;
+
+	static function bigStack(f:() -> Int):Int {
+		if (onBigStack)
+			return f();
+		onBigStack = true;
+		try {
+			var code:Int = untyped __cpp__("nk_on_big_stack({0})", f);
+			onBigStack = false;
+			return code;
+		} catch (e:Dynamic) {
+			onBigStack = false;
+			throw e;
+		}
+	}
+
+	// The JIT is on unless -interp or NEKOMATA_JIT=0 turns it off, the switch for what
+	//  haxelib starts as neko, which takes no host options. Where it cannot get
+	//  executable memory, modules run in the interpreter without a notice
+	static function setUpJit() {
 		cpp.cppia.Host.enableJit(Sys.getEnv("NEKOMATA_JIT") != "0");
 		if (!untyped __cpp__("__scriptable_cppia_jit_active()"))
 			cpp.cppia.Host.enableJit(false);
+	}
+
+	static function command(args:Array<String>):Int {
+		setUpJit();
 		var exe = Sys.programPath();
 		var attached = Launcher.attached(exe);
-		if (attached != null) {
-			var code = runAttached(exe, attached, args);
-			if (code != 0)
-				Sys.exit(code);
-			return;
-		}
+		if (attached != null)
+			return runAttached(exe, attached, args);
 		var neko = Launcher.isNeko(exe);
 		var stats = false;
 		// Options come before the module, as neko reads them; the rest is the program's
@@ -56,7 +182,7 @@ class Main {
 					NekoStats.measure("total", true);
 				case "-version":
 					Sys.println(VERSION);
-					return;
+					return 0;
 				case "--emit" if (args.length > 1):
 					emitTo = args[1];
 					args.shift();
@@ -67,23 +193,21 @@ class Main {
 		}
 		if (!neko && args[0] == "boot") {
 			boot(args.slice(1));
-			return;
+			return 0;
 		}
 		if (args.length == 0) {
 			if (neko)
 				Sys.print('NekoVM $VERSION (c)2005-2025 Haxe Foundation\n  Usage : neko <file>\n');
 			else
 				usage();
-			Sys.exit(1);
+			return 1;
 		}
 		var file = args.shift();
 		if (!neko && isCppia(file)) {
 			cpp.cppia.Host.runFile(file);
-			return;
+			return 0;
 		}
-		var code = runNeko(file, args, stats);
-		if (code != 0)
-			Sys.exit(code);
+		return runNeko(file, args, stats);
 	}
 
 	static function usage() {
