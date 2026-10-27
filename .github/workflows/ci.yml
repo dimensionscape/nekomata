@@ -35,6 +35,25 @@ jobs:
         with:
           haxe-version: 4.3.7
 
+      # Nekomata stands in for neko 2.4.1, whose $version and primitives it gives, and
+      # setup-haxe installs 2.4.0, so the oracle is 2.4.1 from neko's release, first on
+      # PATH. Its binaries find libneko beside them
+      - name: Install neko 2.4.1
+        run: |
+          case "$RUNNER_OS" in
+            Linux) name=neko-2.4.1-linux64; ext=tar.gz ;;
+            macOS) name=neko-2.4.1-osx-arm64; ext=tar.gz ;;
+            Windows) name=neko-2.4.1-win64; ext=zip ;;
+          esac
+          curl -fsSL -o "$RUNNER_TEMP/neko.$ext" "https://github.com/HaxeFoundation/neko/releases/download/v2-4-1/$name.$ext"
+          if [ "$ext" = zip ]; then unzip -q "$RUNNER_TEMP/neko.$ext" -d "$RUNNER_TEMP"; else tar xzf "$RUNNER_TEMP/neko.$ext" -C "$RUNNER_TEMP"; fi
+          dir="$RUNNER_TEMP/$name"
+          if [ "$RUNNER_OS" = Windows ]; then dir=$(cygpath -w "$dir"); fi
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "NEKOPATH=$dir" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$dir:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$dir:$DYLD_FALLBACK_LIBRARY_PATH" >> "$GITHUB_ENV"
+
       # A source checkout of libhxcpp has no hxcpp.n until it is built, and haxelib run
       # hxcpp stops to ask for it
       - name: Point hxcpp at libhxcpp
