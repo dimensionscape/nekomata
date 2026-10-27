@@ -93,6 +93,7 @@ class Emitter {
 	var builtinHashes:Array<Int> = [];
 
 	static final loaderHash = nekomata.neko.Hash.field("loader");
+	static final callHash = nekomata.neko.Hash.field("call");
 	static final exportsHash = nekomata.neko.Hash.field("exports");
 
 	// The operations the runtime has a version of with an int on the right, named with
@@ -565,6 +566,8 @@ class Emitter {
 
 		buildBlocks(pcs);
 		findIntSlots(pcs, variant);
+		if (hasTraps)
+			findTrapped(pcs);
 
 		// Blocks written inline that end up nested too deep become cases as well
 		var cases = [];
@@ -1059,6 +1062,32 @@ class Emitter {
 		}
 	}
 
+	// For a function with traps: how many of each instruction's slots a trap handler
+	//  reads when what runs there throws, as a trap is set over them. A trap's own
+	//  slots make a region, which is where the trap is set
+	var trappedBelow:Array<Int> = [];
+
+	function findTrapped(pcs:Array<Int>) {
+		var traps = [];
+		for (p in pcs)
+			if (p < m.codeSize && m.op(p) == Trap) {
+				var d = scope.depth.get(p);
+				traps.push({depth: d, region: region(m.next(p), d)});
+			}
+		for (p in pcs) {
+			var below = 0, d = scope.depth.get(p);
+			for (t in traps)
+				if (t.depth > below && t.depth < d && region(p, t.depth) == t.region)
+					below = t.depth;
+			trappedBelow[p] = below;
+		}
+	}
+
+	// Whether a trap handler reads slot k at instruction p, so that it is kept in its
+	//  local rather than pending
+	inline function trapped(p:Int, k:Int):Bool
+		return hasTraps && k < trappedBelow[p];
+
 	// Whether slots from to to at p are all ints
 	function slotsInt(p:Int, from:Int, to:Int):Bool {
 		for (k in from...to)
@@ -1336,13 +1365,14 @@ class Emitter {
 		var a = st.acc;
 		var l = slotLocal(at, k);
 		var id = l.id;
-		if (a == null && !hasTraps)
+		var kept = trapped(at, k);
+		if (a == null && !kept)
 			a = Pending.ofLocal(acc.id, v(acc));
 		if (a != null && a.kind == LOCAL && a.local == id) {
 			st.slots[k] = null;
 			return;
 		}
-		if (a != null && a.kind != EFFECT && !hasTraps) {
+		if (a != null && a.kind != EFFECT && !kept) {
 			release(st, id, out);
 			st.slots[k] = a;
 			return;
@@ -1354,6 +1384,24 @@ class Emitter {
 		out.push(EPos(pos.file, pos.line, ESet(v(l), e)));
 		if (wasEffect)
 			st.acc = Pending.ofLocal(id, v(l));
+		switch e {
+			case EArrayDef(items) if (items.length <= 5 && !Lambda.exists(items, i -> !plain(i))):
+				lastArray = {out: out, index: out.length - 1, slot: k, local: id, items: items};
+			default:
+		}
+	}
+
+	// The last array of plain values written to a slot, while it is the last statement
+	//  written: a $call that passes it as its arguments takes its items instead
+	var lastArray:Null<{out:Array<E>, index:Int, slot:Int, local:Int, items:Array<E>}> = null;
+
+	// A value read without effects, a constant or a local
+	static function plain(e:E):Bool {
+		return switch e {
+			case EInt(_) | EVar(_) | ENull | EBool(_) | EString(_) | EStatic(_, _): true;
+			case EArrayI(a, EInt(_)): plain(a);
+			default: false;
+		}
 	}
 
 	// Writes local l, which is not a slot, with what pending reads it put in locals first
@@ -1482,8 +1530,20 @@ class Emitter {
 				pop(st, d - param, d);
 			case Loop:
 			case Call:
-				var args = top(st, d, param);
 				var f = st.acc;
+				var la = lastArray;
+				if (param == 3 && f != null && f.kind == CONST && f.builtin == callHash && la != null && la.out == out
+					&& la.index == out.length - 1 && la.slot == d - 1 && st.slots[d - 1] == null && la.local == slotLocal(p, d - 1).id) {
+					// $call(f, this, [args]), as Haxe calls each constructor: the call itself,
+					//  with the items for arguments and no array
+					out.pop();
+					var fn = slotValue(st, d - 3), self = slotValue(st, d - 2);
+					st.acc = null;
+					pop(st, d - param, d);
+					setAcc(st, out, effect(call('call${la.items.length}', [fn, self].concat(la.items)), pos));
+					return false;
+				}
+				var args = top(st, d, param);
 				var e:E;
 				var leaf = f != null && f.kind == CONST && f.builtin != 0 ? LEAF_BUILTINS.get(f.builtin) : null;
 				var isBool = false, canThrow = true;
@@ -1551,11 +1611,15 @@ class Emitter {
 				out.push(EPos(pos.file, pos.line, EReturn(e)));
 				return true;
 			case Trap:
-				// An effect pending happens before the trap is set
+				// An effect pending happens before the trap is set, and the slots its
+				//  handler reads are in their locals from then on
 				if (liveAfter)
 					materializeAcc(st, out);
 				else
 					dropAcc(st, out);
+				for (k in 0...d)
+					if (st.slots[k] != null)
+						materializeSlot(st, k, out);
 				out.push(EPos(pos.file, pos.line, call("trapPush", [v(traps), EInt(m.target(p)), v(th)])));
 			case EndTrap:
 				if (liveAfter)

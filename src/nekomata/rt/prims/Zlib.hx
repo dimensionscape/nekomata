@@ -3,6 +3,7 @@ package nekomata.rt.prims;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 import nekomata.rt.Primitives.add;
 import nekomata.rt.prims.Conv.*;
 
@@ -114,7 +115,7 @@ class Zlib {
 	static final none:BytesData = Bytes.alloc(1).getData();
 
 	static function isKind(v:Dynamic, kind:Dynamic):Bool
-		return Std.isOfType(v, NAbstract) && (v : NAbstract).kind == kind;
+		return Rt.isAbstract(v) && (v : NAbstract).kind == kind;
 
 	// A stream of either kind, which set_flush_mode and get_adler32 take
 	static function anyStream(v:Dynamic, prim:String):Dynamic

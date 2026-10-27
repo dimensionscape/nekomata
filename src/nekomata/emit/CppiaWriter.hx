@@ -47,7 +47,7 @@ typedef Local = {
 @:build(nekomata.build.NoFrames.build())
 class CppiaWriter {
 	public static inline var DYNAMIC = "Dynamic";
-	public static inline var ARRAY = "Array.Any";
+	public static inline var ARRAY = "Array.Object";
 	public static inline var INT = "int";
 
 	var strings:Array<String> = [];

@@ -2,6 +2,7 @@ package nekomata.rt.prims;
 
 import haxe.io.Bytes;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 import nekomata.rt.Primitives.add;
 import nekomata.rt.prims.Conv.*;
 
@@ -24,10 +25,10 @@ class StdModule {
 
 	// The module an abstract stands for, or null for any other value
 	public static function of(v:Dynamic):Null<NModule>
-		return Std.isOfType(v, NAbstract) && (v : NAbstract).kind == kind ? (v : NAbstract).data : null;
+		return Rt.isAbstract(v) && (v : NAbstract).kind == kind ? (v : NAbstract).data : null;
 
 	static function loader(v:Dynamic, prim:String):NObject {
-		if (!Std.isOfType(v, NObject))
+		if (!Rt.isObject(v))
 			Primitives.fail(prim);
 		return v;
 	}
@@ -90,7 +91,7 @@ class StdModule {
 			return v;
 		});
 		add("std@module_read", 2, function(fread:Dynamic, l:Dynamic) {
-			if (!Std.isOfType(fread, NFunction) || (fread : NFunction).nargs != 3)
+			if (!Rt.isFunction(fread) || (fread : NFunction).nargs != 3)
 				Primitives.fail("std@module_read");
 			var ld = loader(l, "std@module_read");
 			return read(readAll(fread, "std@module_read"), "", ld, "std@module_read");

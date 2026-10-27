@@ -2,6 +2,7 @@ package nekomata.rt.prims;
 
 import haxe.io.Bytes;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 import nekomata.rt.Primitives.add;
 import nekomata.rt.prims.Conv.*;
 import nekomata.rt.prims.StdSys.host;
@@ -170,7 +171,7 @@ class StdSocket {
 		add("std@socket_send_to", 5, function(s:Dynamic, buf:Dynamic, p:Dynamic, l:Dynamic, a:Dynamic) {
 			var sh = socket(s, "std@socket_send_to"), b = bytes(buf, "std@socket_send_to");
 			var r = checkRange(b, p, l, "std@socket_send_to");
-			if (!Std.isOfType(a, NObject))
+			if (!Rt.isObject(a))
 				Primitives.fail("std@socket_send_to");
 			var addr = {host: (a : NObject).find(h("host")), port: (a : NObject).find(h("port"))};
 			return host(() -> cpp.NativeSocket.socket_send_to(sh, b.getData(), r.pos, r.len, addr));
@@ -178,7 +179,7 @@ class StdSocket {
 		add("std@socket_recv_from", 5, function(s:Dynamic, buf:Dynamic, p:Dynamic, l:Dynamic, a:Dynamic) {
 			var sh = socket(s, "std@socket_recv_from"), b = bytes(buf, "std@socket_recv_from");
 			var r = checkRange(b, p, l, "std@socket_recv_from");
-			if (!Std.isOfType(a, NObject))
+			if (!Rt.isObject(a))
 				Primitives.fail("std@socket_recv_from");
 			var addr = {host: 0, port: 0};
 			var n:Int = host(() -> cpp.NativeSocket.socket_recv_from(sh, b.getData(), r.pos, r.len, addr));

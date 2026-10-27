@@ -100,13 +100,13 @@ class NekoBuiltins {
 	}
 
 	static inline function string(v:Dynamic, what:String):NString {
-		if (!Std.isOfType(v, NString))
+		if (!Rt.isNString(v))
 			Rt.error(what);
 		return v;
 	}
 
 	static inline function object(v:Dynamic, what:String):NObject {
-		if (!Std.isOfType(v, NObject))
+		if (!Rt.isObject(v))
 			Rt.error(what);
 		return v;
 	}
@@ -291,23 +291,23 @@ class NekoBuiltins {
 		// Objects
 		add("new", 1, (o:Dynamic) -> Rt.newObject(o));
 		add("objget", 2, function(o:Dynamic, f:Dynamic):Dynamic {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return null;
 			return (o : NObject).find(int(f, "$objget"));
 		});
 		add("objset", 3, function(o:Dynamic, f:Dynamic, v:Dynamic):Dynamic {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return null;
 			(o : NObject).fields.set(int(f, "$objset"), v);
 			return v;
 		});
 		add("objcall", 3, function(o:Dynamic, f:Dynamic, args:Dynamic):Dynamic {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return null;
 			return Rt.callArgs((o : NObject).find(int(f, "$objcall")), o, array(args, "$objcall"));
 		});
 		add("objfield", 2, function(o:Dynamic, f:Dynamic):Bool {
-			if (!Std.isOfType(o, NObject))
+			if (!Rt.isObject(o))
 				return false;
 			return (o : NObject).has(int(f, "$objfield"));
 		});
@@ -339,24 +339,24 @@ class NekoBuiltins {
 		add("pcompare", 2, (a:Dynamic, b:Dynamic) -> Rt.physCompare(a, b));
 		add("not", 1, (v:Dynamic) -> Rt.not(v));
 		add("istrue", 1, (v:Dynamic) -> Rt.toBool(v));
-		add("isnan", 1, (v:Dynamic) -> Std.isOfType(v, NFloat) && Math.isNaN((v : NFloat).v));
-		add("isinfinite", 1, (v:Dynamic) -> Std.isOfType(v, NFloat) && !Math.isNaN((v : NFloat).v) && !Math.isFinite((v : NFloat).v));
+		add("isnan", 1, (v:Dynamic) -> Rt.isNFloat(v) && Math.isNaN((v : NFloat).v));
+		add("isinfinite", 1, (v:Dynamic) -> Rt.isNFloat(v) && !Math.isNaN((v : NFloat).v) && !Math.isFinite((v : NFloat).v));
 		add("getkind", 1, function(v:Dynamic):Dynamic {
-			if (!Std.isOfType(v, NAbstract))
+			if (!Rt.isAbstract(v))
 				Rt.error("$getkind");
 			return (v : NAbstract).kind;
 		});
-		add("iskind", 2, (v:Dynamic, k:Dynamic) -> Std.isOfType(v, NAbstract) && (v : NAbstract).kind == k);
+		add("iskind", 2, (v:Dynamic, k:Dynamic) -> Rt.isAbstract(v) && (v : NAbstract).kind == k);
 
 		// Functions
 		add("nargs", 1, function(f:Dynamic) {
-			if (!Std.isOfType(f, NFunction))
+			if (!Rt.isFunction(f))
 				Rt.error("$nargs");
 			return (f : NFunction).nargs;
 		});
 		add("call", 3, (f:Dynamic, th:Dynamic, args:Dynamic) -> Rt.callArgs(f, th, array(args, "$call")));
 		add("closure", NFunction.VAR_ARGS, function(args:Array<Dynamic>):Dynamic {
-			if (args.length < 2 || !Std.isOfType(args[0], NFunction))
+			if (args.length < 2 || !Rt.isFunction(args[0]))
 				Rt.error("$closure");
 			var fn:NFunction = args[0];
 			var th = args[1];
@@ -372,7 +372,7 @@ class NekoBuiltins {
 			return Rt.apply(args[0], null, args.slice(1));
 		});
 		add("varargs", 1, function(f:Dynamic):Dynamic {
-			if (!Std.isOfType(f, NFunction) || (f : NFunction).nargs != 1)
+			if (!Rt.isFunction(f) || (f : NFunction).nargs != 1)
 				Rt.error("$varargs");
 			return new NFunction(function(args:Array<Dynamic>) return Rt.call1(f, null, args), NFunction.VAR_ARGS, Primitive);
 		});
@@ -438,7 +438,7 @@ class NekoBuiltins {
 		add("version", 0, () -> 241);
 		add("neko_build_year", 0, () -> 2026);
 		add("setresolver", 1, function(f:Dynamic) {
-			if (f != null && (!Std.isOfType(f, NFunction) || (f : NFunction).nargs != 2))
+			if (f != null && (!Rt.isFunction(f) || (f : NFunction).nargs != 2))
 				Rt.error("$setresolver");
 			Rt.resolver.value = f;
 			return null;
@@ -450,22 +450,23 @@ class NekoBuiltins {
 	static function comparer(cmp:Dynamic, prim:String):Null<(Dynamic, Dynamic) -> Bool> {
 		if (cmp == null)
 			return null;
-		if (!Std.isOfType(cmp, NFunction) || (cmp : NFunction).nargs != 2)
+		if (!Rt.isFunction(cmp) || (cmp : NFunction).nargs != 2)
 			Rt.error(prim);
 		return function(a, b) {
-			var r = Rt.call2(cmp, null, a, b);
+			var r:Dynamic = Rt.call2(cmp, null, a, b);
 			return Rt.isInt(r) && (r : Int) == 0;
 		};
 	}
 
 	static function hash(h:Dynamic):NHash {
-		if (!Std.isOfType(h, NHash))
+		if (!Rt.isNHash(h))
 			Rt.error("Invalid hashtable");
-		return h;
+		return Rt.asNHash(h);
 	}
 }
 
 // One binding in a neko hash table
+@:build(nekomata.build.NoFrames.build())
 class HCell {
 	public var hkey:Int;
 	public var key:Dynamic;
@@ -483,6 +484,7 @@ class HCell {
 // Neko's $hnew tables (vm/builtins.c), cell for cell: $hiter visits bindings in the
 //  order neko does, which programs that print or generate code from a table rely on
 @:keep
+@:build(nekomata.build.NoFrames.build())
 class NHash {
 	static inline var DEF_SIZE = 7;
 
@@ -508,6 +510,18 @@ class NHash {
 			}
 			return null;
 		}
+		if (cmp == null && Rt.isNString(k)) {
+			// A neko string key equals another with the same bytes, and other keys as
+			//  $compare says
+			var b = (k : NString).b;
+			while (c != null) {
+				var ck:Dynamic = c.key;
+				if (Rt.isNString(ck) ? sameBytes(b, (ck : NString).b) : Rt.compare(k, ck) == 0)
+					return c;
+				c = c.next;
+			}
+			return null;
+		}
 		while (c != null) {
 			if (cmp == null ? Rt.compare(k, c.key) == 0 : cmp(k, c.key))
 				return c;
@@ -515,6 +529,9 @@ class NHash {
 		}
 		return null;
 	}
+
+	static inline function sameBytes(a:haxe.io.Bytes, b:haxe.io.Bytes):Bool
+		return a.length == b.length && a.compare(b) == 0;
 
 	// Adds a binding in front of any for the same key, as $hadd and $hset do
 	public function add(k:Dynamic, v:Dynamic) {
@@ -547,19 +564,20 @@ class NHash {
 	public function resize(size:Int) {
 		var n = size <= 0 ? DEF_SIZE : size;
 		var cc:Array<Null<HCell>> = [for (_ in 0...n) null];
-		// Neko re-adds each chain from its end, which keeps the chain's order
-		function addRec(c:Null<HCell>) {
-			if (c == null)
-				return;
-			addRec(c.next);
-			var k = c.hkey % n;
-			c.next = cc[k];
-			cc[k] = c;
-		}
 		for (i in 0...ncells)
-			addRec(cells[i]);
+			readd(cells[i], cc, n);
 		cells = cc;
 		ncells = n;
+	}
+
+	// Neko re-adds each chain from its end, which keeps the chain's order
+	static function readd(c:Null<HCell>, cc:Array<Null<HCell>>, n:Int) {
+		if (c == null)
+			return;
+		readd(c.next, cc, n);
+		var k = c.hkey % n;
+		c.next = cc[k];
+		cc[k] = c;
 	}
 
 	// Neko's val_hash (vm/hash.c), stable across runs: it reads the contents of
@@ -568,11 +586,11 @@ class NHash {
 		// The common keys, without the state hashRec needs for nested values
 		if (Rt.isInt(v))
 			return (v : Int) & 0x3FFFFFFF;
-		if (Std.isOfType(v, NString)) {
-			var b = (v : NString).b;
-			var h = 0, k = b.length;
+		if (Rt.isNString(v)) {
+			var d = (v : NString).b.getData();
+			var h = 0, k = d.length;
 			while (k > 0)
-				h = h * 19 + signed(b.get(--k));
+				h = h * 19 + signed(cpp.NativeArray.unsafeGet(d, --k));
 			return h & 0x3FFFFFFF;
 		}
 		var h = new HashState();

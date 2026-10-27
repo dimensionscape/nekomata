@@ -2,6 +2,7 @@ package nekomata.rt.prims;
 
 import sys.thread.Thread;
 import nekomata.rt.Values;
+import nekomata.rt.Rt;
 import nekomata.rt.Boot;
 import nekomata.rt.NekoStack;
 import nekomata.rt.Primitives.add;
@@ -33,7 +34,7 @@ class StdThread {
 		current = new sys.thread.Tls();
 
 		add("std@thread_create", 2, function(f:Dynamic, p:Dynamic) {
-			if (!Std.isOfType(f, NFunction) || (f : NFunction).nargs != 1)
+			if (!Rt.isFunction(f) || (f : NFunction).nargs != 1)
 				Primitives.fail("std@thread_create");
 			var value = new NAbstract(threadKind, null);
 			var started = new sys.thread.Lock();

@@ -108,7 +108,7 @@ class NekoLoader {
 	}
 
 	static function failureString(th:Dynamic):Dynamic {
-		if (!Std.isOfType(th, NObject))
+		if (!Rt.isObject(th))
 			return Rt.error("failure_to_string");
 		var o:NObject = th;
 		var b = new haxe.io.BytesBuffer();
@@ -159,7 +159,7 @@ class NekoLoader {
 	}
 
 	static function loadprim(th:Dynamic, prim:Dynamic, nargs:Dynamic):Dynamic {
-		if (!Std.isOfType(th, NObject) || !Std.isOfType(prim, NString) || !Rt.isInt(nargs))
+		if (!Rt.isObject(th) || !Rt.isNString(prim) || !Rt.isInt(nargs))
 			return Rt.error("loadprim");
 		var name = Rt.bytes(prim).toString();
 		var n:Int = nargs;
@@ -179,11 +179,11 @@ class NekoLoader {
 	}
 
 	static function loadmodule(th:Dynamic, name:Dynamic, vthis:Dynamic):Dynamic {
-		if (!Std.isOfType(th, NObject) || !Std.isOfType(name, NString) || !Std.isOfType(vthis, NObject))
+		if (!Rt.isObject(th) || !Rt.isNString(name) || !Rt.isObject(vthis))
 			return Rt.error("loadmodule");
 		var o:NObject = th;
 		var cache = o.find(h("cache"));
-		if (!Std.isOfType(cache, NObject))
+		if (!Rt.isObject(cache))
 			return Rt.error("loadmodule");
 		return load(o, cache, Rt.bytes(name).toString(), vthis);
 	}
