@@ -421,12 +421,21 @@ class Harness {
 		var tests = suiteTests(s, filters);
 		var dir = work + "/results/" + suite;
 		for (i in indexes) {
+			progress('test ${tests[i].name}');
 			var o = runOne(suite, tests[i]);
 			o.built = built;
 			File.saveContent(dir + "/" + i + ".tmp", haxe.Json.stringify(o));
 			FileSystem.rename(dir + "/" + i + ".tmp", dir + "/" + i + ".json");
 		}
 	}
+
+	// A worker's account of what it is doing, written out at once, so that when nothing
+	//  finishes the harness can show where each worker is
+	public static function progress(what:String)
+		if (Exec.tag != "main") {
+			Sys.println(DateTools.format(Date.now(), "%H:%M:%S ") + what);
+			Sys.stdout().flush();
+		}
 
 	public static function describe(e:Dynamic):String {
 		if (Std.isOfType(e, haxe.Exception))
@@ -778,6 +787,7 @@ class Exec {
 
 	public static function start(cmd:String, args:Array<String>, cwd:String, ?env:Env, timeout = 120.0):Proc {
 		var rd = Harness.work + "/runs/" + tag + "-" + (counter++);
+		Harness.progress('start ${Path.withoutDirectory(rd)}: $cmd');
 		Harness.makeDir(rd);
 		if (!Harness.windows)
 			return startSh(cmd, args, cwd, env, timeout, rd);
@@ -851,8 +861,10 @@ class Exec {
 				Sys.sleep(0.2);
 			else
 				gone = true;
+		Harness.progress('ended ${Path.withoutDirectory(h.rd)}${timedOut ? " (timed out)" : ""}, closing');
 		if (gone)
 			h.p.close();
+		Harness.progress('closed ${Path.withoutDirectory(h.rd)}');
 		var code = -1;
 		if (!timedOut) {
 			var c = Std.parseInt(read(h.rd + "/code").trim());
@@ -1035,6 +1047,7 @@ class HostBin {
 				return 'no usable host at $source after 15 minutes: $problem';
 			if (!said) {
 				Sys.println('     waiting for the host at $source: $problem');
+				Sys.stdout().flush();
 				said = true;
 			}
 			Sys.sleep(5);
