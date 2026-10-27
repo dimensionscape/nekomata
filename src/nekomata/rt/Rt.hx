@@ -674,9 +674,12 @@ class Rt {
 		return a == b ? 0 : a < b ? -1 : 1;
 	}
 
+	// Neko's scmp: what the C library's memcmp gives, which is a byte difference with
+	//  glibc and -1 or 1 with Microsoft's, then the lengths
 	static function bcmp(a:Bytes, b:Bytes):Int {
-		var r = a.compare(b);
-		return r < 0 ? -1 : r > 0 ? 1 : 0;
+		var n = a.length < b.length ? a.length : b.length;
+		var r:Int = n == 0 ? 0 : untyped __cpp__("memcmp({0}->getBase(), {1}->getBase(), {2})", a.getData(), b.getData(), n);
+		return r != 0 ? r : a.length == b.length ? 0 : a.length < b.length ? -1 : 1;
 	}
 
 	// Neko's val_compare: 0, -1, 1, or INVALID

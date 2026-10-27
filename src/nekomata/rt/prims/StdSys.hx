@@ -19,6 +19,48 @@ class FileData {
 
 // libs/std sys.c, file.c, process.c, misc.c, md5.c and int32.c, on libhxcpp's ports of them
 @:keep
+@:cppFileCode('
+#include <stdio.h>
+#include <errno.h>
+
+// file_contents as neko does it: fopen, the length ftell gives at the end, then fread
+//  until that much is read. 0 with the bytes; 1 when fopen or fread fails; 2 for a
+//  length a neko string cannot have, which is what ext4 gives for a directory
+static int nk_file_contents(::String inName, Array<unsigned char> &outData)
+{
+   FILE *f = fopen(inName.utf8_str(), "rb");
+   if (!f)
+      return 1;
+   fseek(f, 0, SEEK_END);
+   int len = (int)ftell(f);
+   fseek(f, 0, SEEK_SET);
+   if ((unsigned int)len > (1u << 28) - 1)
+   {
+      fclose(f);
+      return 2;
+   }
+   outData = Array_obj<unsigned char>::__new(len, len);
+   int p = 0;
+   while (len > 0)
+   {
+      int d = (int)fread(outData->getBase() + p, 1, len, f);
+      if (d <= 0)
+      {
+         if (ferror(f) && errno == EINTR)
+         {
+            clearerr(f);
+            continue;
+         }
+         fclose(f);
+         return 1;
+      }
+      p += d;
+      len -= d;
+   }
+   fclose(f);
+   return 0;
+}
+')
 class StdSys {
 	static final fileKind = new NObject();
 	static final processKind = new NObject();
@@ -121,7 +163,7 @@ class StdSys {
 			var full = host(() -> cpp.NativeSys.file_full_path(str(p, "std@file_full_path")));
 			return full == null ? Primitives.fail("std@file_full_path") : NString.of(full);
 		});
-		add("std@sys_exe_path", 0, () -> nstr(cpp.NativeSys.sys_exe_path()));
+		add("std@sys_exe_path", 0, () -> nstr(nekomata.rt.Boot.exePath != null ? nekomata.rt.Boot.exePath : cpp.NativeSys.sys_exe_path()));
 		add("std@sys_program_path", 0, () -> nstr(nekomata.rt.Boot.programPath));
 		add("std@sys_env", 0, function() {
 			// Neko's list cells here are [key, value, next]
@@ -193,6 +235,17 @@ class StdSys {
 		});
 		add("std@file_contents", 1, function(f:Dynamic) {
 			var name = str(f, "std@file_contents");
+			if (Sys.systemName() != "Windows") {
+				// What reading a directory gives depends on the system and its file system,
+				//  so this takes neko's own steps
+				var data:haxe.io.BytesData = null;
+				var r:Int = untyped __cpp__("nk_file_contents({0}, {1})", name, data);
+				if (r == 2)
+					NekoLoader.failure("max_string_size reached", "alloc.c", 177);
+				if (r == 1)
+					Rt.raise(([NString.of("file_contents"), NString.of(name)] : Array<Dynamic>));
+				return new NString(Bytes.ofData(data));
+			}
 			return new NString(Bytes.ofData(host(() -> cpp.NativeFile.file_contents_bytes(name))));
 		});
 		add("std@file_stdin", 0, () -> stdio(cpp.NativeFile.file_stdin(), "stdin"));
@@ -208,7 +261,17 @@ class StdSys {
 					Primitives.fail("std@process_run");
 				args = [for (x in (a : Array<Dynamic>)) str(x, "std@process_run")];
 			}
-			var p = host(() -> cpp.NativeProcess.process_run(cmd, args));
+			var p = host(() -> {
+				try {
+					return cpp.NativeProcess.process_run(cmd, args);
+				} catch (e:Dynamic) {
+					// Neko forks before it execs, so elsewhere than Windows a program that does
+					//  not start is still a process: its child says so and exits 1
+					if (args == null || Sys.systemName() == "Windows")
+						throw e;
+					return cpp.NativeProcess.process_run("/bin/sh", ["-c", "printf 'Command not found : %s\\n' \"$0\" >&2; exit 1", cmd]);
+				}
+			});
 			if (p == null)
 				Primitives.fail("std@process_run");
 			return new NAbstract(processKind, p);

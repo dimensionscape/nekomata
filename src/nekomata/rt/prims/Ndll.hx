@@ -214,6 +214,27 @@ static bool nk_contains(Array<unsigned char> inData, String inText)
          return true;
    return false;
 }
+
+// What dlerror says of a library that does not load, which neko adds to its failure
+//  elsewhere than on Windows; null on Windows, or when the library loads
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+static ::String nk_dlopen_error(::String inFile)
+{
+   #ifdef _WIN32
+   return null();
+   #else
+   void *h = dlopen(inFile.utf8_str(), RTLD_LAZY);
+   if (h)
+   {
+      dlclose(h);
+      return null();
+   }
+   const char *e = dlerror();
+   return e ? ::String(e) : ::String(null());
+   #endif
+}
 ')
 class Ndll {
 	// Neko's own libraries, which are built against libneko: Nekomata serves what it
@@ -296,8 +317,10 @@ class Ndll {
 			return lib;
 		var path = Rt.isObject(loader) ? (loader : NObject).find(H_PATH) : null;
 		var file = NekoLoader.selectFile(path, libName, ".ndll");
-		if (!sys.FileSystem.exists(file) || sys.FileSystem.isDirectory(file))
-			failure("Failed to load library : " + file, 237);
+		if (!sys.FileSystem.exists(file) || sys.FileSystem.isDirectory(file)) {
+			var why:Null<String> = untyped __cpp__("nk_dlopen_error({0})", file);
+			failure("Failed to load library : " + file + (why == null ? "" : ' ($why)'), 237);
+		}
 		var full = sys.FileSystem.fullPath(file);
 		lib = files.get(full);
 		if (lib == null) {
