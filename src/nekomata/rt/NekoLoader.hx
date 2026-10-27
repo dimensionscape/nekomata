@@ -13,6 +13,7 @@ class NekoLoader {
 
 	// NEKOMATA_TRACE=1 reports each primitive a module loads that the runtime lacks
 	static var trace = Sys.getEnv("NEKOMATA_TRACE") == "1";
+	static var nekoPrims:Null<Map<String, Bool>>;
 
 	// What runs each module read and not yet run, for loadmodule and std@module_exec
 	static var runners = new haxe.ds.ObjectMap<NModule, () -> Void>();
@@ -172,8 +173,12 @@ class NekoLoader {
 		if (trace)
 			Sys.stderr().writeString('[nekomata] no primitive $name($n)
 ');
-		// Neko fails here; the Haxe std loads many primitives it never calls, so the
-		//  error waits until the primitive is called
+		if (nekoPrims == null)
+			nekoPrims = [for (p in NekoPrimList.names) p => true];
+		if (!nekoPrims.exists(name + "/" + n))
+			return failure('Primitive not found : $name($n)', "load.c", 357);
+		// Neko has this one and Nekomata does not; the Haxe std loads some primitives it
+		//  never calls, so the error waits until it is called
 		return new NFunction(function(args:Array<Dynamic>):Dynamic return failure('Primitive not found : $name($n)', "load.c", 357),
 			NFunction.VAR_ARGS, Primitive, null, null, name);
 	}

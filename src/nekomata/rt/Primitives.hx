@@ -35,6 +35,7 @@ class Primitives {
 		nekomata.rt.prims.Ssl.register();
 		nekomata.rt.prims.StdModule.register();
 		nekomata.rt.prims.Sqlite.register();
+		nekomata.rt.prims.StdSerialize.register();
 	}
 }
 
@@ -48,9 +49,10 @@ class StdPrims {
 		return Rt.num(v);
 	}
 
-	// alloc_best_int: neko's ints are 32-bit here, so any int that fits
+	// alloc_best_int((int)f): a C cast, which gives what the processor gives for a float
+	//  out of range, as neko's math_floor and the like do on the same system
 	static function bestInt(f:Float):Int
-		return Std.int(f);
+		return untyped __cpp__("(int)({0})", f);
 
 	static function math(name:String, f:Float->Float)
 		Primitives.add('std@math_$name', 1, (v:Dynamic) -> new NFloat(f(number(v, 'std@math_$name'))));

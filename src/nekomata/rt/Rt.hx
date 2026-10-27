@@ -473,6 +473,14 @@ class Rt {
 		return null;
 	}
 
+	public static function reraise(v:Dynamic):Dynamic {
+		if (v == null)
+			v = NULL_THROWN;
+		NekoStack.recordRethrow(v);
+		untyped __cpp__("::hx::Throw({0})", v);
+		return null;
+	}
+
 	public static function error(msg:String):Dynamic
 		return raise(NString.of(msg));
 
@@ -572,12 +580,22 @@ class Rt {
 	// The operator fields of objects, for an operation on numbers whose operands are not
 	//  both numbers
 	static function objectOps(a:Dynamic, b:Dynamic, field:Int, rfield:Int, name:String):Dynamic {
-		var r:Dynamic = objectOp(a, b, field);
-		if (!missing(r))
-			return r;
-		r = objectOp(b, a, rfield);
-		if (!missing(r))
-			return r;
+		// As neko's NumberOp: an object on the left gets the operator first, then one
+		//  on the right its reverse; the last object tried without one, or an object
+		//  on the left with an int on the right, is "Unsupported operation"
+		if (isObject(a)) {
+			var r:Dynamic = objectOp(a, b, field);
+			if (!missing(r))
+				return r;
+			if (isInt(b))
+				return error("Unsupported operation");
+		}
+		if (isObject(b)) {
+			var r:Dynamic = objectOp(b, a, rfield);
+			if (!missing(r))
+				return r;
+			return error("Unsupported operation");
+		}
 		return opError(name);
 	}
 
@@ -684,8 +702,8 @@ class Rt {
 			var f = asObject(a).find(H_COMPARE);
 			if (f == null)
 				return INVALID;
-			var r = call1(f, a, b);
-			return isInt(r) ? r : INVALID;
+			var r:Dynamic = call1(f, a, b);
+			return isInt(r) ? intOf(r) : INVALID;
 		}
 		return same(a, b) ? 0 : INVALID;
 	}
@@ -739,10 +757,10 @@ class Rt {
 	public static function hash(v:Dynamic):Int {
 		if (!isString(v))
 			error("$hash");
-		var name = bytes(v).toString();
-		var h = nekomata.neko.Hash.field(name);
+		var b = bytes(v);
+		var h = nekomata.neko.Hash.bytes(b);
 		if (!names.exists(h))
-			names.set(h, name);
+			names.set(h, b.toString());
 		return h;
 	}
 
@@ -1025,6 +1043,20 @@ class Rt {
 	//  two of them apart by their environments alone, as neko does
 	public static var boundCall:Dynamic = function(env:Array<Dynamic>, args:Array<Dynamic>):Dynamic
 		return callArgs(env[0], env[1], env.slice(2).concat(args));
+
+	// $closure's function: it takes any number of arguments, and gives null without
+	//  calling f when they and the bound ones are not as many as f takes
+	public static var closureCall:Dynamic = function(env:Array<Dynamic>, args:Array<Dynamic>):Dynamic {
+		var f:NFunction = env[0];
+		if (f.nargs != NFunction.VAR_ARGS && f.nargs != env.length - 2 + args.length)
+			return null;
+		return callArgs(f, env[1], env.slice(2).concat(args));
+	}
+
+	public static function closure(f:NFunction, th:Dynamic, args:Array<Dynamic>):NFunction {
+		var env:Array<Dynamic> = [f, th];
+		return new NFunction(closureCall, NFunction.VAR_ARGS, Bound, env.concat(args));
+	}
 
 	// f with this and the first arguments bound, taking nargs more
 	public static function bind(f:Dynamic, th:Dynamic, args:Array<Dynamic>, nargs:Int):NFunction {

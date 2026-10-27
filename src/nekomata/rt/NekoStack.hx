@@ -123,6 +123,13 @@ class NekoStack {
 	public static function recordThrow(v:Dynamic):Void
 		thrown.value = {value: v, raw: rawFrames()};
 
+	// $rethrow keeps what neko's exc_stack held, the frames the last caught value was
+	//  raised through, and adds the frames it is raised from now
+	public static function recordRethrow(v:Dynamic):Void {
+		var caught = caughtRaw.value;
+		thrown.value = {value: v, raw: caught == null ? rawFrames() : caught.concat(rawFrames())};
+	}
+
 	// The raw stack v was raised from; hxcpp's own record of the unwind for errors the
 	//  host raised without the runtime, which hold fewer neko frames
 	static function rawRaisedFrom(v:Dynamic):Array<Dynamic> {

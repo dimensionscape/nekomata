@@ -405,7 +405,7 @@ class Ndll {
 			if (Rt.isNString(s)) {
 				// A Haxe String
 				var b = (s : NString).b;
-				var len = o.fields.get(H_LENGTH);
+				var len:Dynamic = o.fields.get(H_LENGTH);
 				return Rt.isInt(len) && (len : Int) >= 0 && (len : Int) <= b.length ? b.getString(0, len) : b.toString();
 			}
 			if (isHaxeArray(o))

@@ -12,13 +12,15 @@ import nekomata.rt.Values;
 #include <math.h>
 #include <string>
 
-// $int of a float, as neko converts it on each system
+// $int of a float, as neko converts it on each system: a C cast on Windows, which
+//  gives what the processor gives out of range, and elsewhere the float modulo 2^32,
+//  which alloc_int keeps 31 bits of
 static int nk_float_to_int(double f)
 {
-   #ifdef HX_WINDOWS
+   #ifdef _WIN32
    return (int)f;
    #else
-   return (int)(unsigned int)fmod(f, 4294967296.0);
+   return ((int)((unsigned int)fmod(f, 4294967296.0) << 1)) >> 1;
    #endif
 }
 
@@ -84,6 +86,10 @@ class NekoBuiltins {
 		return table.get(h);
 	}
 
+	static final KIND_KIND = new NObject();
+	static final KIND_HASH = new NObject();
+	static final KIND_INT32 = new NObject();
+
 	static function add(name:String, nargs:Int, fn:Dynamic)
 		table.set(nekomata.neko.Hash.field(name), new NFunction(fn, nargs, Primitive, null, null, name));
 
@@ -98,6 +104,24 @@ class NekoBuiltins {
 			Rt.error(what);
 		return v;
 	}
+
+	// Only a float, as neko's val_check(v,float) takes
+	static inline function floatArg(v:Dynamic, what:String):Float {
+		if (!Rt.isNFloat(v))
+			Rt.error(what);
+		return (v : NFloat).v;
+	}
+
+	// On a little-endian machine, neko swaps bytes only for the value true
+	static inline function bigEndian(e:Dynamic):Bool
+		return (e is Bool) && (e : Bool);
+
+	static inline function swap32(v:Int):Int
+		return (v >>> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24);
+
+	// Neko's LTB32 on a signed int, whose first shift copies the sign into the top bytes
+	static inline function swap32s(v:Int):Int
+		return (v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24);
 
 	static inline function string(v:Dynamic, what:String):NString {
 		if (!Rt.isNString(v))
@@ -115,8 +139,14 @@ class NekoBuiltins {
 	//  from where it uses them: without a frame of their own, which neko's stack
 	//  traces would not show, as none of them calls back into neko code
 
+	// The longest string or array neko makes: its length shares a word with the type tag
+	static inline var MAX_SIZE = (1 << 28) - 1;
+
 	@:noDebug public static function amake(n:Dynamic):Dynamic {
 		var size = int(n, "$amake");
+		// alloc_array takes the size unsigned, so a negative one is past the limit too
+		if (size < 0 || size > MAX_SIZE)
+			NekoLoader.failure("max_array_size reached", "alloc.c", 211);
 		var a:Array<Dynamic> = [];
 		if (size > 0)
 			a[size - 1] = null;
@@ -126,12 +156,12 @@ class NekoBuiltins {
 	// $hget, $hset, $hmem and $hremove with no compare function, which run no neko code,
 	//  as the code calls them where they are used
 	@:noDebug public static function hgetNull(h:Dynamic, k:Dynamic):Dynamic {
-		var c = hash(h).find(k, null);
+		var c = hash(h, "$hget").find(k, null);
 		return c == null ? null : c.value;
 	}
 
 	@:noDebug public static function hsetNull(h:Dynamic, k:Dynamic, v:Dynamic):Bool {
-		var t = hash(h);
+		var t = hash(h, "$hset");
 		var c = t.find(k, null);
 		if (c != null) {
 			c.value = v;
@@ -142,10 +172,10 @@ class NekoBuiltins {
 	}
 
 	@:noDebug public static function hmemNull(h:Dynamic, k:Dynamic):Bool
-		return hash(h).find(k, null) != null;
+		return hash(h, "$hmem").find(k, null) != null;
 
 	@:noDebug public static function hremoveNull(h:Dynamic, k:Dynamic):Bool
-		return hash(h).remove(k, null);
+		return hash(h, "$hremove").remove(k, null);
 
 	@:noDebug public static function asize(a:Dynamic):Dynamic {
 		if (Rt.typeOf(a) != Rt.TARRAY)
@@ -247,7 +277,12 @@ class NekoBuiltins {
 		});
 
 		// Strings
-		add("smake", 1, (n:Dynamic) -> new NString(Bytes.alloc(int(n, "$smake"))));
+		add("smake", 1, function(n:Dynamic) {
+			var size = int(n, "$smake");
+			if (size < 0 || size > MAX_SIZE)
+				NekoLoader.failure("max_string_size reached", "alloc.c", 177);
+			return new NString(Bytes.alloc(size));
+		});
 		add("ssize", 1, ssize);
 		add("scopy", 1, function(s:Dynamic) {
 			var b = string(s, "$scopy").b;
@@ -273,7 +308,7 @@ class NekoBuiltins {
 		});
 		add("sfind", 3, function(s:Dynamic, p:Dynamic, pat:Dynamic):Dynamic {
 			var b = string(s, "$sfind").b, pos = int(p, "$sfind"), sub = string(pat, "$sfind").b;
-			if (pos < 0 || pos > b.length)
+			if (pos < 0 || pos >= b.length)
 				Rt.error("$sfind");
 			var last = b.length - sub.length;
 			var i = pos;
@@ -284,6 +319,94 @@ class NekoBuiltins {
 				if (j == sub.length)
 					return i;
 				i++;
+			}
+			return null;
+		});
+
+		// Binary access to strings and floats, little-endian unless the last argument is
+		//  true. Reads out of bounds give null, writes out of bounds throw
+		add("sget16", 3, function(s:Dynamic, p:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$sget16").b, pos = int(p, "$sget16");
+			if (pos < 0 || pos + 2 > b.length)
+				return null;
+			var v = b.getUInt16(pos);
+			return bigEndian(e) ? ((v & 0xFF) << 8) | (v >> 8) : v;
+		});
+		add("sget32", 3, function(s:Dynamic, p:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$sget32").b, pos = int(p, "$sget32");
+			if (pos < 0 || pos + 4 > b.length)
+				return null;
+			var v = b.getInt32(pos);
+			return bigEndian(e) ? swap32(v) : v;
+		});
+		add("sgetf", 3, function(s:Dynamic, p:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$sgetf").b, pos = int(p, "$sgetf");
+			if (pos < 0 || pos + 4 > b.length)
+				return null;
+			var v = b.getInt32(pos);
+			return Rt.float(haxe.io.FPHelper.i32ToFloat(bigEndian(e) ? swap32(v) : v));
+		});
+		add("sgetd", 3, function(s:Dynamic, p:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$sgetd").b, pos = int(p, "$sgetd");
+			if (pos < 0 || pos + 8 > b.length)
+				return null;
+			var lo = b.getInt32(pos), hi = b.getInt32(pos + 4);
+			return Rt.float(bigEndian(e) ? haxe.io.FPHelper.i64ToDouble(swap32(hi), swap32(lo)) : haxe.io.FPHelper.i64ToDouble(lo, hi));
+		});
+		add("sset16", 4, function(s:Dynamic, p:Dynamic, v:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$sset16").b, pos = int(p, "$sset16"), x = int(v, "$sset16");
+			if (pos < 0 || pos + 2 > b.length)
+				Rt.error("$sset16");
+			b.setUInt16(pos, (bigEndian(e) ? ((x & 0xFF) << 8) | (x >> 8) : x) & 0xFFFF);
+			return null;
+		});
+		add("sset32", 4, function(s:Dynamic, p:Dynamic, v:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$sset32").b, pos = int(p, "$sset32"), x = int(v, "$sset32");
+			if (pos < 0 || pos + 4 > b.length)
+				Rt.error("$sset32");
+			b.setInt32(pos, bigEndian(e) ? swap32s(x) : x);
+			return null;
+		});
+		add("ssetf", 4, function(s:Dynamic, p:Dynamic, v:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$ssetf").b, pos = int(p, "$ssetf"), f = floatArg(v, "$ssetf");
+			if (pos < 0 || pos + 4 > b.length)
+				Rt.error("$ssetf");
+			var bits = haxe.io.FPHelper.floatToI32(f);
+			b.setInt32(pos, bigEndian(e) ? swap32(bits) : bits);
+			return null;
+		});
+		add("ssetd", 4, function(s:Dynamic, p:Dynamic, v:Dynamic, e:Dynamic):Dynamic {
+			var b = string(s, "$ssetd").b, pos = int(p, "$ssetd"), f = floatArg(v, "$ssetd");
+			if (pos < 0 || pos + 8 > b.length)
+				Rt.error("$ssetd");
+			var i = haxe.io.FPHelper.doubleToI64(f);
+			b.setInt32(pos, bigEndian(e) ? swap32(i.high) : i.low);
+			b.setInt32(pos + 4, bigEndian(e) ? swap32(i.low) : i.high);
+			return null;
+		});
+		add("itof", 2, function(v:Dynamic, e:Dynamic):Dynamic {
+			var bits = int(v, "$itof");
+			return Rt.float(haxe.io.FPHelper.i32ToFloat(bigEndian(e) ? swap32s(bits) : bits));
+		});
+		add("ftoi", 2, function(v:Dynamic, e:Dynamic):Dynamic {
+			var bits = haxe.io.FPHelper.floatToI32(floatArg(v, "$ftoi"));
+			return bigEndian(e) ? swap32s(bits) : bits;
+		});
+		add("itod", 3, function(lo:Dynamic, hi:Dynamic, e:Dynamic):Dynamic {
+			var l = int(lo, "$itod"), h = int(hi, "$itod");
+			return Rt.float(bigEndian(e) ? haxe.io.FPHelper.i64ToDouble(swap32(h), swap32(l)) : haxe.io.FPHelper.i64ToDouble(l, h));
+		});
+		add("dtoi", 3, function(v:Dynamic, out:Dynamic, e:Dynamic):Dynamic {
+			var f = floatArg(v, "$dtoi"), a = array(out, "$dtoi");
+			if (a.length < 2)
+				Rt.error("$dtoi");
+			var i = haxe.io.FPHelper.doubleToI64(f);
+			if (bigEndian(e)) {
+				a[1] = swap32(i.low);
+				a[0] = swap32(i.high);
+			} else {
+				a[0] = i.low;
+				a[1] = i.high;
 			}
 			return null;
 		});
@@ -306,10 +429,10 @@ class NekoBuiltins {
 				return null;
 			return Rt.callArgs((o : NObject).find(int(f, "$objcall")), o, array(args, "$objcall"));
 		});
+		// The object's own fields, not its prototype's
 		add("objfield", 2, function(o:Dynamic, f:Dynamic):Bool {
-			if (!Rt.isObject(o))
-				return false;
-			return (o : NObject).has(int(f, "$objfield"));
+			var h = int(f, "$objfield");
+			return Rt.isObject(o) && (o : NObject).index(h) >= 0;
 		});
 		add("objremove", 2, (o:Dynamic, f:Dynamic) -> object(o, "$objremove").fields.remove(int(f, "$objremove")));
 		add("objfields", 1, function(o:Dynamic):Array<Dynamic> {
@@ -318,7 +441,7 @@ class NekoBuiltins {
 		});
 		add("hash", 1, (s:Dynamic) -> Rt.hash(s));
 		// $fasthash hashes without recording the name, unlike $hash
-		add("fasthash", 1, (s:Dynamic) -> nekomata.neko.Hash.field(string(s, "$fasthash").b.toString()));
+		add("fasthash", 1, (s:Dynamic) -> nekomata.neko.Hash.bytes(string(s, "$fasthash").b));
 		add("field", 1, function(f:Dynamic):Dynamic {
 			var n = Rt.knownFieldName(int(f, "$field"));
 			return n == null ? null : Rt.str(n);
@@ -341,12 +464,27 @@ class NekoBuiltins {
 		add("istrue", 1, (v:Dynamic) -> Rt.toBool(v));
 		add("isnan", 1, (v:Dynamic) -> Rt.isNFloat(v) && Math.isNaN((v : NFloat).v));
 		add("isinfinite", 1, (v:Dynamic) -> Rt.isNFloat(v) && !Math.isNaN((v : NFloat).v) && !Math.isFinite((v : NFloat).v));
+		// A kind is an abstract of its own kind, as in neko. Hash tables are abstracts of
+		//  the hash kind there, and ints past 31 bits boxed int32s of the int32 kind
 		add("getkind", 1, function(v:Dynamic):Dynamic {
+			if (Rt.isInt(v) && (((v : Int) + 0x40000000) & 0x80000000) != 0)
+				return new NAbstract(KIND_KIND, KIND_INT32);
+			if (Rt.isNHash(v))
+				return new NAbstract(KIND_KIND, KIND_HASH);
 			if (!Rt.isAbstract(v))
 				Rt.error("$getkind");
-			return (v : NAbstract).kind;
+			return new NAbstract(KIND_KIND, (v : NAbstract).kind);
 		});
-		add("iskind", 2, (v:Dynamic, k:Dynamic) -> Rt.isAbstract(v) && (v : NAbstract).kind == k);
+		add("iskind", 2, function(v:Dynamic, k:Dynamic):Bool {
+			if (!Rt.isAbstract(k) || (k : NAbstract).kind != KIND_KIND)
+				Rt.error("$iskind");
+			var kind:Dynamic = (k : NAbstract).data;
+			if (Rt.isAbstract(v))
+				return (v : NAbstract).kind == kind;
+			if (Rt.isNHash(v))
+				return kind == KIND_HASH;
+			return kind == KIND_INT32 && Rt.isInt(v) && (((v : Int) + 0x40000000) & 0x80000000) != 0;
+		});
 
 		// Functions
 		add("nargs", 1, function(f:Dynamic) {
@@ -356,15 +494,16 @@ class NekoBuiltins {
 		});
 		add("call", 3, (f:Dynamic, th:Dynamic, args:Dynamic) -> Rt.callArgs(f, th, array(args, "$call")));
 		add("closure", NFunction.VAR_ARGS, function(args:Array<Dynamic>):Dynamic {
-			if (args.length < 2 || !Rt.isFunction(args[0]))
+			if (args.length < 2)
+				NekoLoader.failure("Invalid closure arguments number", "builtins.c", 823);
+			if (!Rt.isFunction(args[0]))
 				Rt.error("$closure");
 			var fn:NFunction = args[0];
 			var th = args[1];
 			var bound = args.slice(2);
 			if (fn.nargs != NFunction.VAR_ARGS && bound.length > fn.nargs)
-				Rt.error("$closure");
-			var left = fn.nargs == NFunction.VAR_ARGS ? NFunction.VAR_ARGS : fn.nargs - bound.length;
-			return Rt.bind(fn, th, bound, left);
+				NekoLoader.failure("Invalid closure arguments number", "builtins.c", 829);
+			return Rt.closure(fn, th, bound);
 		});
 		add("apply", NFunction.VAR_ARGS, function(args:Array<Dynamic>):Dynamic {
 			if (args.length < 1)
@@ -379,19 +518,19 @@ class NekoBuiltins {
 
 		// Exceptions
 		add("throw", 1, (v:Dynamic) -> Rt.raise(v));
-		add("rethrow", 1, (v:Dynamic) -> Rt.raise(v));
+		add("rethrow", 1, (v:Dynamic) -> Rt.reraise(v));
 		add("excstack", 0, () -> NekoStack.excStack());
 		add("callstack", 0, () -> NekoStack.callStack());
 
 		// Hash tables
 		add("hnew", 1, (n:Dynamic) -> new NHash(int(n, "$hnew")));
 		add("hget", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> {
-			var c = hash(h).find(k, comparer(cmp, "$hget"));
+			var c = hash(h, "$hget").find(k, comparer(cmp, "$hget"));
 			c == null ? null : c.value;
 		});
-		add("hmem", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).find(k, comparer(cmp, "$hmem")) != null);
+		add("hmem", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h, "$hmem").find(k, comparer(cmp, "$hmem")) != null);
 		add("hset", 4, function(h:Dynamic, k:Dynamic, v:Dynamic, cmp:Dynamic) {
-			var t = hash(h);
+			var t = hash(h, "$hset");
 			var c = t.find(k, comparer(cmp, "$hset"));
 			if (c != null) {
 				c.value = v;
@@ -401,19 +540,21 @@ class NekoBuiltins {
 			return true;
 		});
 		add("hadd", 3, function(h:Dynamic, k:Dynamic, v:Dynamic) {
-			hash(h).add(k, v);
+			hash(h, "$hadd").add(k, v);
 			return null;
 		});
-		add("hremove", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h).remove(k, comparer(cmp, "$hremove")));
+		add("hremove", 3, (h:Dynamic, k:Dynamic, cmp:Dynamic) -> hash(h, "$hremove").remove(k, comparer(cmp, "$hremove")));
 		add("hresize", 2, function(h:Dynamic, n:Dynamic) {
-			hash(h).resize(int(n, "$hresize"));
+			hash(h, "$hresize").resize(int(n, "$hresize"));
 			return null;
 		});
 		add("hkey", 1, (k:Dynamic) -> NHash.valHash(k));
-		add("hcount", 1, (h:Dynamic) -> hash(h).nitems);
-		add("hsize", 1, (h:Dynamic) -> hash(h).ncells);
+		add("hcount", 1, (h:Dynamic) -> hash(h, "$hcount").nitems);
+		add("hsize", 1, (h:Dynamic) -> hash(h, "$hsize").ncells);
 		add("hiter", 2, function(h:Dynamic, f:Dynamic) {
-			var t = hash(h);
+			if (!Rt.isFunction(f) || ((f : NFunction).nargs != 2 && (f : NFunction).nargs != NFunction.VAR_ARGS))
+				Rt.error("$hiter");
+			var t = hash(h, "$hiter");
 			for (i in 0...t.ncells) {
 				var c = t.cells[i];
 				while (c != null) {
@@ -458,9 +599,9 @@ class NekoBuiltins {
 		};
 	}
 
-	static function hash(h:Dynamic):NHash {
+	static function hash(h:Dynamic, prim:String):NHash {
 		if (!Rt.isNHash(h))
-			Rt.error("Invalid hashtable");
+			Rt.error(prim);
 		return Rt.asNHash(h);
 	}
 }
@@ -615,14 +756,13 @@ class NHash {
 			case Rt.TNULL:
 				small(h, 0);
 			case Rt.TFLOAT:
-				// val_string of a float on 64 bits starts 4 bytes into the vfloat: the
-				//  padding before the double, then its low half, read from the end
+				// val_string of a float is its double: vfloat is packed to 4 bytes, so the
+				//  double follows the type word as a string's bytes do. Read from the end
 				var b = haxe.io.Bytes.alloc(8);
 				b.setDouble(0, Rt.num(v));
-				for (k in [3, 2, 1, 0])
-					small(h, signed(b.get(k)));
-				for (_ in 0...4)
-					small(h, 0);
+				var k = 8;
+				while (k > 0)
+					small(h, signed(b.get(--k)));
 			case Rt.TBOOL:
 				small(h, (v : Bool) ? 1 : 0);
 			case Rt.TSTRING:
