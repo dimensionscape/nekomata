@@ -357,11 +357,46 @@ class Harness {
 						results[i] = c.outcome();
 					}
 			}
+			var before = printed;
 			flush();
+			if (printed != before)
+				quietSince = Sys.time();
+			else if (Sys.time() - quietSince > 300) {
+				reportStalled(running, tests, results);
+				quietSince = Sys.time();
+			}
 			if (printed < n)
 				Sys.sleep(0.05);
 		}
 		return results;
+	}
+
+	static var quietSince = Sys.time();
+
+	// Five minutes with nothing finished: the tests the workers still have, and the
+	//  command of each run that has not ended, so a log shows what hangs
+	static function reportStalled(running:Array<{proc:Proc, tests:Array<Int>}>, tests:Array<Test>, results:Array<Outcome>) {
+		var waiting = [for (w in running) for (i in w.tests) if (results[i] == null) tests[i].name];
+		Sys.println('     nothing has finished for 5 minutes; still running: ${waiting.join(", ")}');
+		var runs = work + "/runs";
+		if (!FileSystem.exists(runs))
+			return;
+		for (d in FileSystem.readDirectory(runs)) {
+			var rd = runs + "/" + d;
+			if (FileSystem.exists(rd + "/code"))
+				continue;
+			for (script in ["run.bat", "run.sh"])
+				if (FileSystem.exists(rd + "/" + script)) {
+					var lines = File.getContent(rd + "/" + script).split("\n").map(l -> l.trim());
+					var cmd = Lambda.find(lines, l -> l.indexOf(" > ") > 0 && l.indexOf("code") < 0);
+					Sys.println('       $d: ${cmd == null ? "?" : cmd}');
+					for (f in ["out", "err"])
+						if (FileSystem.exists(rd + "/" + f))
+							for (l in tail(Exec.read(rd + "/" + f), 3).split("\n"))
+								if (l.trim() != "")
+									Sys.println('         $f: $l');
+				}
+		}
 	}
 
 	static function readOutcome(path:String):Null<Outcome> {
@@ -808,7 +843,16 @@ class Exec {
 			timedOut = true;
 		}
 		var secs = Sys.time() - h.start;
-		h.p.close();
+		// A kill that has not taken after a while leaves the process to itself, as
+		//  closing it would wait for it
+		var gone = !timedOut;
+		for (_ in 0...50)
+			if (!gone && h.p.exitCode(false) == null)
+				Sys.sleep(0.2);
+			else
+				gone = true;
+		if (gone)
+			h.p.close();
 		var code = -1;
 		if (!timedOut) {
 			var c = Std.parseInt(read(h.rd + "/code").trim());
@@ -820,7 +864,7 @@ class Exec {
 		return {out: read(h.rd + "/out"), err: err, code: code, timedOut: timedOut, seconds: secs};
 	}
 
-	static function read(path:String):String {
+	public static function read(path:String):String {
 		for (attempt in 0...5)
 			try {
 				if (!FileSystem.exists(path))
