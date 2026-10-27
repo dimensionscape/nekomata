@@ -200,6 +200,10 @@ class Harness {
 		var tempBase = Sys.getEnv("LOCALAPPDATA") != null ? Sys.getEnv("LOCALAPPDATA") + "/Temp" : Sys.getEnv("TEMP");
 		if (tempBase == null || !FileSystem.exists(tempBase))
 			tempBase = Sys.getEnv("TEMP");
+		if (tempBase == null || !FileSystem.exists(tempBase))
+			tempBase = Sys.getEnv("TMPDIR");
+		if (tempBase == null || !FileSystem.exists(tempBase))
+			tempBase = "/tmp";
 		work = Path.normalize(tempBase) + "/nekomata-harness/" + DateTools.format(Date.now(), "%Y%m%d-%H%M%S") + "-"
 			+ Std.random(100000);
 		makeDir(work);
@@ -414,11 +418,11 @@ class Harness {
 		if (rr == null)
 			throw 'no runner $runner';
 		var host = rr.host;
-		var full = rr.jit ? ["-jit"].concat(args) : args;
+		// The Nekomata host runs the JIT unless told not to, the stock host the interpreter
+		var full = rr.jit ? ["-jit"].concat(args) : host.isNekomata() ? ["-interp"].concat(args) : args;
 		// Programs the host runs that start "neko" start the host, in the same mode
 		var hostEnv:Env = env == null ? new Map() : env.copy();
-		if (rr.jit)
-			hostEnv.set("NEKOMATA_JIT", "1");
+		hostEnv.set("NEKOMATA_JIT", rr.jit ? "1" : "0");
 		var r = null;
 		// A host that is missing or half written is rebuilding, not failing
 		for (attempt in 0...3) {
@@ -430,7 +434,7 @@ class Harness {
 			}
 			var standIn = host.standIn();
 			if (standIn != null)
-				hostEnv.set("PATH", win(standIn) + ";" + Sys.getEnv("PATH"));
+				hostEnv.set("PATH", win(standIn) + (windows ? ";" : ":") + Sys.getEnv("PATH"));
 			r = Exec.run(host.exe, full, cwd, hostEnv, timeout);
 			if (!Exec.notStarted(r))
 				return r;
@@ -592,8 +596,26 @@ class Harness {
 	public static function absolute(path:String):String
 		return Path.removeTrailingSlashes(Path.normalize(FileSystem.absolutePath(path)));
 
+	public static final windows = Sys.systemName() == "Windows";
+
+	// A path as the system's programs take it
 	public static function win(path:String):String
-		return path.replace("/", "\\");
+		return windows ? path.replace("/", "\\") : path;
+
+	// A directory with the separator after it, as haxelib passes the one it ran from
+	public static function dirArg(path:String):String
+		return win(path) + (windows ? "\\" : "/");
+
+	// The file name of a program
+	public static function exe(name:String):String
+		return windows ? name + ".exe" : name;
+
+	// Copies a program, which elsewhere than Windows needs to be marked executable again
+	public static function copyProgram(from:String, to:String) {
+		File.copy(from, to);
+		if (!windows)
+			Sys.command("chmod", ["+x", to]);
+	}
 
 	public static function safeName(name:String):String
 		return ~/[^A-Za-z0-9._-]+/g.replace(name, "_");
@@ -722,6 +744,8 @@ class Exec {
 	public static function start(cmd:String, args:Array<String>, cwd:String, ?env:Env, timeout = 120.0):Proc {
 		var rd = Harness.work + "/runs/" + tag + "-" + (counter++);
 		Harness.makeDir(rd);
+		if (!Harness.windows)
+			return startSh(cmd, args, cwd, env, timeout, rd);
 		var w = Harness.win(rd);
 		var b = new StringBuf();
 		b.add("@echo off\r\n");
@@ -746,6 +770,30 @@ class Exec {
 		};
 	}
 
+	// The same as a shell script, elsewhere than Windows
+	static function startSh(cmd:String, args:Array<String>, cwd:String, env:Null<Env>, timeout:Float, rd:String):Proc {
+		var b = new StringBuf();
+		b.add('cd ${shQuote(cwd)} || { echo 9998 > "$rd/code.tmp"; mv "$rd/code.tmp" "$rd/code"; exit 0; }\n');
+		if (env != null)
+			for (k => v in env)
+				b.add(v == null ? 'unset $k\n' : 'export $k=${shQuote(v)}\n');
+		b.add([for (a in [cmd].concat(args)) shQuote(a)].join(" ") + ' < /dev/null > "$rd/out" 2> "$rd/err"\n');
+		b.add('echo $$? > "$rd/code.tmp"\n');
+		b.add('mv "$rd/code.tmp" "$rd/code"\n');
+		File.saveContent(rd + "/run.sh", b.toString());
+		return {
+			p: new sys.io.Process("sh", [rd + "/run.sh"]),
+			rd: rd,
+			cwd: cwd,
+			start: Sys.time(),
+			timeout: timeout
+		};
+	}
+
+	// A word for sh: single-quoted, each single quote in it written as '\''
+	static function shQuote(s:String):String
+		return "'" + s.replace("'", "'\\''") + "'";
+
 	// The run, once it has ended or been killed for taking too long
 	public static function poll(h:Proc):Null<Run> {
 		var timedOut = false;
@@ -753,7 +801,10 @@ class Exec {
 			if (Sys.time() - h.start <= h.timeout)
 				return null;
 			// The whole tree, as the host may have started processes of its own
-			Sys.command('taskkill /F /T /PID ${h.p.getPid()} > nul 2>&1');
+			if (Harness.windows)
+				Sys.command('taskkill /F /T /PID ${h.p.getPid()} > nul 2>&1');
+			else
+				Sys.command("sh", ["-c", 'k() { for c in $$(pgrep -P $$1); do k $$c; done; kill -9 $$1 2>/dev/null; }; k ${h.p.getPid()}']);
 			timedOut = true;
 		}
 		var secs = Sys.time() - h.start;
@@ -788,6 +839,10 @@ class Exec {
 		if (r.timedOut || r.out != "")
 			return false;
 		var e = r.err.trim();
+		if (!Harness.windows)
+			return (r.code == 127 || r.code == 126)
+				&& (e == "" || e.indexOf("not found") >= 0 || e.indexOf("Permission denied") >= 0 || e.indexOf("cannot execute") >= 0
+					|| e.indexOf("Exec format error") >= 0 || e.indexOf("No such file") >= 0);
 		return (r.code == 9009 && (e == "" || e.indexOf("is not recognized as an internal or external command") >= 0))
 			|| e.startsWith("The system cannot execute the specified program") || e.indexOf("is not compatible with the version of Windows") >= 0
 			|| e.startsWith("Access is denied");
@@ -879,8 +934,11 @@ class HostBin {
 
 	// Only the Nekomata host takes neko's command line; programs another host runs
 	//  start the first Nekomata host for "neko"
+	public function isNekomata():Bool
+		return label.toLowerCase().startsWith("nekomata");
+
 	public function standIn():Null<String> {
-		var h = label.toLowerCase().startsWith("nekomata") ? this : Lambda.find(all, h -> h.label.toLowerCase().startsWith("nekomata"));
+		var h = isNekomata() ? this : Lambda.find(all, h -> h.isNekomata());
 		return h == null || h.exe == null ? null : Path.directory(h.exe) + "/standin";
 	}
 
@@ -908,11 +966,11 @@ class HostBin {
 					var name = Path.withoutDirectory(source);
 					var to = dir + "/" + name;
 					try {
-						File.copy(source, to);
-						File.copy(source, dir + "/standin/" + (name.endsWith(".exe") ? "neko.exe" : "neko"));
+						Harness.copyProgram(source, to);
+						Harness.copyProgram(source, dir + "/standin/" + (name.endsWith(".exe") ? "neko.exe" : "neko"));
 						var from = Path.directory(source);
 						for (n in FileSystem.readDirectory(from))
-							if (n.endsWith(".dll") || n.endsWith(".ndll")) {
+							if (n.endsWith(".dll") || n.endsWith(".ndll") || n.endsWith(".so") || n.endsWith(".dylib")) {
 								File.copy(from + "/" + n, dir + "/" + n);
 								File.copy(from + "/" + n, dir + "/standin/" + n);
 							}
@@ -1501,7 +1559,7 @@ class LibHxcpp {
 					cwd: hxcpp,
 					env: env,
 					// haxelib passes the directory it was run from last
-					argsFor: d -> ["run.n"].concat(args).concat([Harness.win(d) + "\\"]),
+					argsFor: d -> ["run.n"].concat(args).concat([Harness.dirArg(d)]),
 				})
 			});
 		tests.push({
@@ -1521,14 +1579,15 @@ class LibHxcpp {
 					].join("\n"));
 					File.saveContent(d + "/hello.c", '#include <stdio.h>\nint main(void) { printf("hello from c %d\\n", 6 * 7); return 0; }\n');
 				},
-				argsFor: d -> ["run.n", "Build.xml", Harness.win(d) + "\\"],
+				argsFor: d -> ["run.n", "Build.xml", Harness.dirArg(d)],
 				check: (nd, d) -> {
-					if (!FileSystem.exists(d + "/hello.exe"))
-						return "builds no hello.exe";
-					var a = Exec.run(Harness.win(nd + "/hello.exe"), [], nd, null, 60);
-					var b = Exec.run(Harness.win(d + "/hello.exe"), [], d, null, 60);
+					var hello = Harness.exe("hello");
+					if (!FileSystem.exists(d + "/" + hello))
+						return 'builds no $hello';
+					var a = Exec.run(Harness.win(nd + "/" + hello), [], nd, null, 60);
+					var b = Exec.run(Harness.win(d + "/" + hello), [], d, null, 60);
 					if (b.out != a.out || b.code != a.code || b.out.trim() != "hello from c 42")
-						return 'the hello.exe it builds prints "${b.out.trim()}" and exits ${b.code}, where neko\'s prints "${a.out.trim()}" and exits ${a.code}';
+						return 'the $hello it builds prints "${b.out.trim()}" and exits ${b.code}, where neko\'s prints "${a.out.trim()}" and exits ${a.code}';
 					return null;
 				}
 			})
@@ -1540,9 +1599,15 @@ class LibHxcpp {
 // The modules decode and translate check: every .n haxelib has installed, libhxcpp's,
 //  neko's compilers, what the other suites built, and --corpus paths
 class CorpusSuite {
+	// The haxelib repository: HAXEPATH's lib, as the Windows installer sets it up, or the
+	//  one haxelib config names
 	static function haxeLib():String {
 		var hp = Sys.getEnv("HAXEPATH");
-		return Path.removeTrailingSlashes(Path.normalize(hp != null ? hp : "C:/HaxeToolkit/haxe")) + "/lib";
+		var lib = Path.removeTrailingSlashes(Path.normalize(hp != null ? hp : "C:/HaxeToolkit/haxe")) + "/lib";
+		if (FileSystem.exists(lib))
+			return lib;
+		var r = Exec.run("haxelib", ["config"], Harness.root, null, 60);
+		return r.code == 0 ? Path.removeTrailingSlashes(Path.normalize(r.out.trim())) : lib;
 	}
 
 	static function libhxcpp():String {

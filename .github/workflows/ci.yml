@@ -1,5 +1,5 @@
-# Builds the host against libhxcpp's main branch and runs the test harness, with neko
-# as the oracle, on each system Nekomata supports
+# Builds the host and the stock cppia host against libhxcpp's main branch, then runs the
+# test harness, with neko as the oracle, on each system Nekomata supports
 name: CI
 
 on:
@@ -14,33 +14,43 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # The harness takes about 15 minutes; a build that waits on input would otherwise
+    # hold the runner for 6 hours
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check out libhxcpp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: openfl/libhxcpp
           path: libhxcpp
 
+      # v2 installs neko on arm64 macOS as well, where v1 cannot
       - name: Install Haxe and neko
-        uses: krdlab/setup-haxe@v1
+        uses: krdlab/setup-haxe@v2
         with:
           haxe-version: 4.3.7
 
+      # A source checkout of libhxcpp has no hxcpp.n until it is built, and haxelib run
+      # hxcpp stops to ask for it
       - name: Point hxcpp at libhxcpp
         run: |
           haxelib newrepo
           haxelib dev hxcpp "$(pwd)/libhxcpp"
+          (cd libhxcpp/tools/hxcpp && haxe compile.hxml)
+          neko -version
 
-      - name: Build the host
-        run: haxe build.hxml
+      - name: Build the hosts
+        run: |
+          haxe build.hxml
+          haxe cppia.hxml
 
       - name: Fetch the upstream test sources
         run: test/upstream/fetch.sh
 
       - name: Run the tests
-        run: haxe test/harness.hxml
+        run: haxe test/harness.hxml -j 4

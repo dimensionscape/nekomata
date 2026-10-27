@@ -69,8 +69,13 @@ Milestones 1 to 3 are done, with most of 4, 5 and 6:
 - neko's own `nekoc`, run on the host, compiles to the same bytes as on neko.
 - Haxe 4.3.7's unit tests all pass on the host, interpreted and with the JIT, and its sys
   and threads suites give the same results as on neko.
-- Every primitive of neko's std, regexp, zlib, ssl and sqlite libraries is there, on
-  libhxcpp's ports where they match neko and on the C libraries where they do not.
+- 255 of the 296 primitives neko 2.4.1's std, regexp, zlib, ssl and sqlite libraries
+  export are there, on libhxcpp's ports where they match neko and on the C libraries
+  where they do not; regexp runs on PCRE2 itself, a byte a character unless asked for
+  UTF-8, as neko's does. The rest (`unicode_*`, most `int32_*`, socket polling and
+  epoll, `parse_xml`, `make_sha1` and a few of neko's internals) load and fail when
+  called, which the Haxe std never does; a name neko does not have fails to load, as
+  on neko.
 - The host stands in for neko (`tools/install-neko.sh`): with it first on PATH, haxelib's
   `version`, `list`, `path`, `run` and `install` print what they print on neko, and
   haxelib's `info` reads lib.haxe.org over HTTPS. `nekomata boot` writes executables in

@@ -12,11 +12,11 @@ describes the design and the milestones.
 
 ## Status
 
-Milestones 1 and 2 of [PLAN.md](PLAN.md) are done. The host runs neko modules: a
-hand-written neko program and a Haxe program built with `-neko` print exactly what neko
-prints, interpreted and with cppia's JIT. Most primitives are not there yet, so larger
-programs such as haxelib's `run.n` load and start, then stop at the first primitive the
-runtime lacks.
+Milestones 1 to 3 of [PLAN.md](PLAN.md) are done, with most of 4 to 6; the plan lists
+what is left. Neko programs, Haxe programs built with `-neko`, haxelib's and libhxcpp's
+run scripts, neko's own compilers and Haxe's unit, sys and threads suites give what they
+give on neko, interpreted and with cppia's JIT, which the host uses by default. The test
+harness below checks this against neko on Windows, Linux and macOS in CI.
 
 The reader decodes every instruction exactly as `nekoc -d` does on haxelib's, lime's and
 libhxcpp's run scripts, and every one of those modules passes neko's stack check and
@@ -81,7 +81,7 @@ haxe test/harness.hxml [options] [suite[:filter]...]
 ```
 
 Neko is the oracle. Every program runs on neko and on the host, interpreted and with
-`-jit`, each in a work directory of its own, and the host passes when it prints the same
+the JIT, each in a work directory of its own, and the host passes when it prints the same
 stdout and stderr and exits with the same code; the expected output always comes from
 neko at test time. The host under test is `bin/host/nekomata`, and also `bin/cppia/Cppia`
 once `haxe cppia.hxml` has built it, or the hosts given with `--host`. The harness runs

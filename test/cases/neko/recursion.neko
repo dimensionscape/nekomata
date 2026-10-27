@@ -15,9 +15,10 @@ var o = $new(null);
 o.count = function(n) if n == 0 0 else 1 + this.count(n - 1);
 $print("method 20000 ", o.count(20000), "\n");
 viacall = function(n) if n == 0 "bottom" else $call(viacall, null, $array(n - 1));
-// Each $call goes through C, whose stack neko limits far more tightly
+// Each $call goes through C, whose stack neko limits far more tightly: under 1000 calls
+//  on Windows. Where it overflows depends on the system's stack, so only a depth both
+//  reach is checked
 $print("$call 300 ", viacall(300), "\n");
-$print("$call 100000: ", try viacall(100000) catch e e, "\n");
 
 // Mutual recursion, not in tail position
 isEven = function(n) if n == 0 true else isOdd(n - 1) == true;
